@@ -23,7 +23,7 @@ sharedModel.front2back()
 agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/1000000)
 
 MAX_EPSODES = 100000000
-agent.make_environment()
+
 i = 0
 while i < MAX_EPSODES:
     agent.run(i)

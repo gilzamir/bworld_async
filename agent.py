@@ -45,7 +45,7 @@ handler.setLevel(logging.DEBUG)
 logger_debug.addHandler(handler)
 
 
-
+'''
 def apply_updates(shared, tensors, gradients, iterations=K.variable(0, dtype='int64', name='iterations')):
     grads =  gradients
     params = tensors
@@ -69,7 +69,7 @@ def apply_updates(shared, tensors, gradients, iterations=K.variable(0, dtype='in
             new_p = p.constraint(new_p)
 
         K.update(p, new_p)
-        
+'''
 
 def huber_loss(y, q_value):
     error = K.abs(y - q_value)
@@ -141,20 +141,15 @@ class SharedModel:
                  K.learning_phase(), # train or test mode
         ]
 
-        self.get_gradients = K.function(inputs=input_tensors, outputs=gradients)
+        self.gradient_update = K.function(inputs=input_tensors, outputs=gradients)
 
     #https://github.com/keras-team/keras/issues/2226
     def get_gradient(self, x, mask, label):
-        inputs = [ x, mask, # X
+        return [ x, mask, # X
                    [1], # sample weights
                    label, # y
                    0 # learning phase in TEST mode
             ]
-        g = self.get_gradients(inputs)
-        loss = self.model.total_loss
-        #print(self.weights[1].shape)
-        #print(g[1].shape)
-        return g
 
     def get_model_pair(self):
         if not self.model:
@@ -236,7 +231,7 @@ class AsyncAgent:
         self.locked = False
         self.RENDER = False
         self.REFRESH_MODEL_NUM = 10000
-        self.N_RANDOM_STEPS = 500
+        self.N_RANDOM_STEPS = 50
         self.NO_OP_STEPS = 30
         self.ASYNC_UPDATE = 100
 
@@ -282,73 +277,69 @@ class AsyncAgent:
         action_one_hot = get_one_hot([action], self.shared.action_size) 
         target_one_hot = action_one_hot * targets[:, None]
         
-        #BEGIN:feedforward to get gradient
-        q_values = self.shared.model.predict([state, self.shared.mask_actions])
-        loss = np.sum((target_one_hot - q_values)**2)
-
-        gradient = self.shared.get_gradient(state, action_one_hot, target_one_hot)
-
-        #gradient = list(gradient)
-        self.shared.gradients.append((gradient, loss))
-        #END:feedforward to get gradients
-        return 0
+        gradient = (state, action_one_hot, target_one_hot)
+        
+        self.shared.gradients.append(gradient)
 
 
-    def make_environment(self):
-        self.env = gym.make('BreakoutDeterministic-v4')        
-        self.LOSS = 0.0
-
-        frame = self.env.reset()  
+    def run(self, episode):
+        self.locked = True
+        env = gym.make('BreakoutDeterministic-v4')        
+    
+        frame = env.reset()  
 
         if self.RENDER:
-            self.env.render()
+            env.render()
 
         # this is one of DeepMind's idea.
         # just do nothing at the start of episode to avoid sub-optimal
         for _ in range(random.randint(1, self.NO_OP_STEPS)):
-            frame, _, _, _ = self.env.step(1)
+            frame, _, _, _ = env.step(1)
+
         frame = pre_processing(frame)
         stack_frame = tuple([frame]*self.shared.skip_frames)
         initial_state = np.stack(stack_frame, axis=2)
-        self.initial_state = np.reshape([initial_state], (1, 84, 84, self.shared.skip_frames))
+        initial_state = np.reshape([initial_state], (1, 84, 84, self.shared.skip_frames))
 
-    def run(self, episode):
         self.reset()
-        self.LOSS = 0
+
+        LOSS = 0
         score, start_life = 0, 5
         is_done = False
-        self.locked = True
+
         dead = False
-        initial_state = self.initial_state
+
         action = 0
         next_state = None
         step  = 0   
+        #print("------------------------------------------------------------------------------%s"%(is_done))
         while not is_done:
             if self.shared.shared_time >= self.N_RANDOM_STEPS:
                 action = self.act(initial_state)
             else:
                 action = self.act(initial_state, True)
 
-            frame, reward, is_done, info = self.env.step(action+1)
-
+            frame, reward, is_done, info = env.step(action+1)
+            #print(is_done)
             next_frame = pre_processing(frame)
             next_state = np.reshape([next_frame], (1, 84, 84, 1))
             next_state = np.append(next_state, initial_state[:, :, :, :3], axis=3)
             
-            score += reward
             
             if start_life > info['ale.lives']:
                 reward = -1
                 dead = True
                 start_life = info['ale.lives']
-
+            
             reward = np.clip(reward, -1.0, 1.0)
+            
+            score += reward
             
             logger_debug.debug("REWARD TO ACTION %d is %d" % (action, reward))
             opt = self.shared.model.optimizer
 
             if self.shared.shared_time >= self.N_RANDOM_STEPS:
-                self.LOSS=self.gradient_update(initial_state, action, reward, next_state, dead)
+                self.gradient_update(initial_state, action, reward, next_state, dead)
                 if self.shared.shared_time % self.REFRESH_MODEL_NUM == 0:
                     self.shared.back2front()
 
@@ -357,39 +348,25 @@ class AsyncAgent:
                     tensors = self.shared.model.trainable_weights
                     for gradient in self.shared.gradients:
                         t_tensors = []
-                        for tensor in tensors:
-                            name = tensor.name.split('/')[0]
-                            layer = self.shared.model.get_layer(name)
-                            if layer.trainable:
-                                #idx = self.shared.layer_index[name]
-                                #w1 = layer.get_weights()[0] - 0.0025 * gradient[0][idx][0]
-                                #w2 = layer.get_weights()[1] - 0.0025 * gradient[0][idx][1]
-                                #layer.set_weights([w1, w2])
-                                t_tensors.append(tensor)
-                        #apply_updates(self.shared, t_tensors, gradient[0])
-
-                        avg_loss += gradient[1]
-                    print("THREAD %d: AVG LOSS %f"%(self.thread_id, avg_loss/len(self.shared.gradients)))
-            
+                        loss = self.shared.model.train_on_batch([gradient[0], gradient[1]], gradient[2])
+                        avg_loss += loss
+                    LOSS = avg_loss/len(self.shared.gradients)
+                    print("CURRENT LOSS ON THREAD %d === %f"%(self.thread_id, LOSS))
                     self.shared.gradients.clear()
             if dead:
                 dead = False
             else:
                 initial_state = next_state
             if self.RENDER:
-                self.env.render()
+                env.render()
            
             self.shared.shared_time += 1
             self.thread_time += 1
             step += 1
-
-        count_loss = step
-        if step == 0:
-            count_loss = 1
-        logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d. LOSS IS %f" % (
-            self.thread_time, score, self.epsilon, step, self.thread_time, self.LOSS/count_loss))
-        print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d. LOSS IS %f" % (
-            self.thread_time, score, self.epsilon, step, self.thread_time, self.LOSS/count_loss))
+        logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d." % (
+            self.thread_time, score, self.epsilon, step, self.thread_time))
+        print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d." % (
+            self.thread_time, score, self.epsilon, step, self.thread_time))
         
         self.locked = False
 
