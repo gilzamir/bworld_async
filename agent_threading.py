@@ -28,7 +28,7 @@ from skimage.color import rgb2gray
 from skimage.transform import resize
 from skimage.transform import rotate
 from keras.utils.np_utils import to_categorical
-from multiprocessing import Queue, Process
+from threading import Thread
 
 def pre_processing(observe):
     processed_observe = np.uint8(
@@ -95,7 +95,7 @@ def sample(buffer, size):
 class SharedModel:
     def __init__(self, state_size, action_size):
         self.model = None
-        shared_time = 0
+        self.shared_time = 0
         self.gradients = deque(maxlen=1000)
         self.back_model = None
         self.skip_frames = 4
@@ -114,7 +114,7 @@ class SharedModel:
         with self.graph.as_default():
             outputTensor = self.model.output
 
-            #listOfVariableOfTensors = shared.model.trainable_weights
+            #listOfVariableOfTensors = self.shared.model.trainable_weights
 
             #gradients = K.gradients(outputTensor, listOfVariableOfTensors)
 
@@ -228,10 +228,11 @@ class SharedModel:
             self.back_model.save_weights(name)
 
 class AsyncAgent:
-    def __init__(self, ID):
+    def __init__(self, ID, shared_model):
         self.thread_id = ID
+        self.shared = shared_model
         self.gradient = None
-        self.thread = None
+        self.thread = Thread(target=self.run)
         self.thread_time = 0
         self.update_schedule = 100
         self.epsilon = 1.0
@@ -245,7 +246,6 @@ class AsyncAgent:
         self.N_RANDOM_STEPS = 50000
         self.NO_OP_STEPS = 30
         self.ASYNC_UPDATE = 100
-        self.env = None
 
     def update_epsilon(self, is_randomic=False):
         if not is_randomic:
@@ -255,14 +255,14 @@ class AsyncAgent:
             else:
                 self.epsilon = self.epsilon_min
 
-    def act(self, shared, state, is_randomic = False):
+    def act(self, state, is_randomic = False):
         action = 0
         p = np.random.rand()
         if is_randomic or p <= self.epsilon:
             self.update_epsilon(is_randomic)
             return np.random.choice(self.contextual_actions)
         else:
-            act_values = shared.model.predict([state, shared.mask_actions])
+            act_values = self.shared.model.predict([state, self.shared.mask_actions])
             logger_debug.debug("ACTION VALUES %s" % (act_values))
             action = np.argmax(act_values[0])
             #print("MODEL SELECTED ACTION ::::::: %s" % (action))
@@ -273,9 +273,9 @@ class AsyncAgent:
         pass
 
 
-    def gradient_update(self, shared, state, action, reward, next_state, is_done):
-        with shared.graph.as_default():
-            next_Q_value = shared.back_model.predict([next_state, shared.mask_actions])[0]        
+    def gradient_update(self, state, action, reward, next_state, is_done):
+        with self.shared.graph.as_default():
+            next_Q_value = self.shared.back_model.predict([next_state, self.shared.mask_actions])[0]        
             if is_done:
                 target = reward
             else:
@@ -283,19 +283,18 @@ class AsyncAgent:
             targets = np.zeros(1)
             targets[0] = target
 
-            action_one_hot = get_one_hot([action], shared.action_size) 
+            action_one_hot = get_one_hot([action], self.shared.action_size) 
             target_one_hot = action_one_hot * targets[:, None]
             
             gradient = (state, action_one_hot, target_one_hot)
             
-            shared.gradients.append(gradient)
-     
+            self.shared.gradients.append(gradient)
 
-    def run(self, queue):
-        if self.env == None:
-            self.env =  gym.make('BreakoutDeterministic-v4')   
-        shared = queue.get()
-        with shared.graph.as_default():
+    def make_environment(self):
+        self.env =  gym.make('BreakoutDeterministic-v4')        
+
+    def run(self):
+        with self.shared.graph.as_default():
             self.locked = True
             self.env.reset()
             frame = self.env.reset()  
@@ -309,9 +308,9 @@ class AsyncAgent:
                 frame, _, _, _ = self.env.step(1)
 
             frame = pre_processing(frame)
-            stack_frame = tuple([frame]*shared.skip_frames)
+            stack_frame = tuple([frame]*self.shared.skip_frames)
             initial_state = np.stack(stack_frame, axis=2)
-            initial_state = np.reshape([initial_state], (1, 84, 84, shared.skip_frames))
+            initial_state = np.reshape([initial_state], (1, 84, 84, self.shared.skip_frames))
 
             self.reset()
 
@@ -326,10 +325,10 @@ class AsyncAgent:
             step  = 0   
             #print("------------------------------------------------------------------------------%s"%(is_done))
             while not is_done:
-                if shared.shared_time >= self.N_RANDOM_STEPS:
-                    action = self.act(shared, initial_state)
+                if self.shared.shared_time >= self.N_RANDOM_STEPS:
+                    action = self.act(initial_state)
                 else:
-                    action = self.act(shared, initial_state, True)
+                    action = self.act(initial_state, True)
 
                 frame, reward, is_done, info = self.env.step(action+1)
                 #print(is_done)
@@ -348,23 +347,23 @@ class AsyncAgent:
                 
                 logger_debug.debug("REWARD TO ACTION %d is %d" % (action, reward))
 
-                opt = shared.model.optimizer
+                opt = self.shared.model.optimizer
 
-                if shared.shared_time >= self.N_RANDOM_STEPS:
-                    self.gradient_update(shared, initial_state, action, reward, next_state, dead)
-                    if shared.shared_time % self.REFRESH_MODEL_NUM == 0:
-                        shared.back2front()
+                if self.shared.shared_time >= self.N_RANDOM_STEPS:
+                    self.gradient_update(initial_state, action, reward, next_state, dead)
+                    if self.shared.shared_time % self.REFRESH_MODEL_NUM == 0:
+                        self.shared.back2front()
 
                     if (self.thread_time % self.ASYNC_UPDATE) == 0:
                         avg_loss = 0.0
-                        tensors = shared.model.trainable_weights
-                        for gradient in list(shared.gradients):
+                        tensors = self.shared.model.trainable_weights
+                        for gradient in list(self.shared.gradients):
                             t_tensors = []
-                            loss = shared.model.train_on_batch([gradient[0], gradient[1]], gradient[2])
+                            loss = self.shared.model.train_on_batch([gradient[0], gradient[1]], gradient[2])
                             avg_loss += loss
-                        LOSS = avg_loss/len(shared.gradients)
+                        LOSS = avg_loss/len(self.shared.gradients)
                         print("CURRENT LOSS ON THREAD %d === %f"%(self.thread_id, LOSS))
-                        shared.gradients.clear()
+                        self.shared.gradients.clear()
                 if dead:
                     dead = False
                 else:
@@ -372,7 +371,7 @@ class AsyncAgent:
                 if self.RENDER:
                     self.env.render()
             
-                shared.shared_time += 1
+                self.shared.shared_time += 1
                 self.thread_time += 1
                 step += 1
             logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d." % (
