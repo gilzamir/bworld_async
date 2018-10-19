@@ -100,9 +100,6 @@ class SharedModel:
         self.back_model = None
         self.skip_frames = 4
         self.learning_rate = 0.0025
-        self.initial_decay = 0.0
-        self.decay = 0.0
-        self.rho = 0.9
         self.graph = tf.get_default_graph()
         if type(state_size) == tuple:
             self.state_size = state_size
@@ -375,9 +372,9 @@ class AsyncAgent:
                 self.thread_time += 1
                 step += 1
             logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d." % (
-                self.thread_time, score, self.epsilon, step, self.thread_time))
+                self.thread_time, score, self.epsilon, step, self.shared.shared_time))
             print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d." % (
-                self.thread_time, score, self.epsilon, step, self.thread_time))
+                self.thread_time, score, self.epsilon, step, self.shared.shared_time))
             
             self.locked = False
 

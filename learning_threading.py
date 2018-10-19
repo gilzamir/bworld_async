@@ -1,5 +1,5 @@
 import numpy as np
-from agent import SharedModel, AsyncAgent
+from agent_threading import SharedModel, AsyncAgent
 from collections import deque
 import logging
 from threading import Lock, Thread

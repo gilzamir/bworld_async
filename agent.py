@@ -47,32 +47,6 @@ logger_debug.addHandler(handler)
 logger_debug.propagate = False
 
 
-'''
-def apply_updates(shared, tensors, gradients, iterations=K.variable(0, dtype='int64', name='iterations')):
-    grads =  gradients
-    params = tensors
-    accumulators = [K.zeros(K.int_shape(p), dtype=K.dtype(p)) for p in params]
-    weights = accumulators
-    updates = [K.update_add(iterations, 1)]
-
-    lr = shared.model.optimizer.lr
-    if shared.initial_decay > 0:
-        lr = lr * (1. / (1. + shared.decay * K.cast(shared.iterations,
-                                                  K.dtype(shared.decay))))
-
-    for p, g, a in zip(params, grads, accumulators):
-        # update accumulator
-        new_a = shared.rho * a + (1. - shared.rho) * K.square(g)
-        #shared.updates.append(K.update(a, new_a))
-        new_p = p - lr * g / (K.sqrt(new_a) + K.epsilon())
-
-        # Apply constraints.
-        if getattr(p, 'constraint', None) is not None:
-            new_p = p.constraint(new_p)
-
-        K.update(p, new_p)
-'''
-
 def huber_loss(y, q_value):
     error = K.abs(y - q_value)
     quadratic_part = K.clip(error, 0.0, 1.0)

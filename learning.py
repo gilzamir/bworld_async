@@ -17,7 +17,6 @@ handler.setLevel(logging.DEBUG)
 logger_debug.addHandler(handler)
 logger_debug.propagate = False
 
-
 agents = []
 MAX_THREADS = 4
 sharedModel = SharedModel((84, 84), 3)
@@ -42,8 +41,10 @@ while i < MAX_EPSODES:
     for i in rg:
         agents[i].thread = Process(target=agents[i].run, args=(queue, ))
         agents[i].thread.start()
+
     for i in rg:
         agents[i].thread.join()
+
     if (i % 1000 == 0):
         sharedModel.save("model%d" % (i))
     i += 1
