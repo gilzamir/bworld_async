@@ -8,27 +8,19 @@ import numpy as np
 import actions
 from PIL import Image
 from collections import deque
-from keras.models import Sequential
-from keras.layers import Dense
-from keras.optimizers import Adam
-from keras import backend as K
-import keras
-from keras import layers
-from keras import Model
-import tensorflow as tf
 import io
 import os
 import sys
 import math
 import logging
-from keras.optimizers import RMSprop
 from collections import deque
 import gym
 from skimage.color import rgb2gray
 from skimage.transform import resize
 from skimage.transform import rotate
 from keras.utils.np_utils import to_categorical
-from multiprocessing import Queue, Process
+from multiprocessing import Queue, Process, Pipe
+import numpy as np
 
 def pre_processing(observe):
     processed_observe = np.uint8(
@@ -47,17 +39,6 @@ logger_debug.addHandler(handler)
 logger_debug.propagate = False
 
 
-def huber_loss(y, q_value):
-    error = K.abs(y - q_value)
-    quadratic_part = K.clip(error, 0.0, 1.0)
-    linear_part = error - quadratic_part
-    loss = K.mean(0.5 * K.square(quadratic_part) + linear_part)
-    return loss
-
-
-def get_one_hot(targets, nb_classes):
-    return np.eye(nb_classes)[np.array(targets).reshape(-1)]
-
 def sample(buffer, size):
     indices = random.sample(range(len(buffer)), size)
     result = []
@@ -65,144 +46,21 @@ def sample(buffer, size):
         result.append(buffer[i])
     return result
 
-
-class SharedModel:
-    def __init__(self, state_size, action_size):
-        self.model = None
-        shared_time = 0
+class AsyncAgent:
+    def __init__(self, ID, state_size, action_size, learning_rate=0.0025):
+        self.ID = ID
         self.gradients = deque(maxlen=1000)
-        self.back_model = None
         self.skip_frames = 4
-        self.learning_rate = 0.0025
+        self.learning_rate = learning_rate
         self.initial_decay = 0.0
         self.decay = 0.0
         self.rho = 0.9
-        self.graph = tf.get_default_graph()
         if type(state_size) == tuple:
             self.state_size = state_size
         else:
             self.state_size = (state_size, state_size)
         self.action_size = action_size
         self.mask_actions = np.ones(self.action_size).reshape(1, self.action_size)
-        self.get_model_pair()
-        with self.graph.as_default():
-            outputTensor = self.model.output
-
-            #listOfVariableOfTensors = shared.model.trainable_weights
-
-            #gradients = K.gradients(outputTensor, listOfVariableOfTensors)
-
-            self.weights = [] 
-            self.layer_index = {}
-            idx = 0
-            for tensor in self.model.trainable_weights: 
-                name = tensor.name.split('/')[0]
-                if self.model.get_layer(name).trainable:
-                    self.weights.append(tensor)
-                    self.layer_index[name] = idx
-                    idx += 1
-
-            self.optimizer = self.model.optimizer
-
-            #self.back_weights = [tensor for tensor in self.model.trainable_weights if self.model.get_layer(tensor.name[:-2]).trainable]
-            #self.back_optimizer = self.model.optimizer
-
-
-            gradients = self.optimizer.get_gradients(self.model.total_loss, self.weights)
-
-       
-            input_tensors = [self.model.inputs[0], # input data
-                    self.model.inputs[1],
-                    self.model.sample_weights[0], # how much to weight each sample by
-                     self.model.targets[0], # labels
-                    K.learning_phase(), # train or test mode
-            ]
-
-            self.gradient_update = K.function(inputs=input_tensors, outputs=gradients)
-
-    #https://github.com/keras-team/keras/issues/2226
-    def get_gradient(self, x, mask, label):
-        return [ x, mask, # X
-                   [1], # sample weights
-                   label, # y
-                   0 # learning phase in TEST mode
-            ]
-
-    def get_model_pair(self):
-        with self.graph.as_default():
-            if not self.model:
-                self.model = self._build_model()
-                self.model._make_predict_function()
-                self.model._make_test_function()
-                self.model._make_train_function()
-                self.back_model = self._build_model()
-                self.back_model._make_predict_function()
-                self.back_model._make_test_function()
-                self.back_model._make_train_function()
-            return (self.model, self.back_model)
-
-    def _build_model(self):
-        with self.graph.as_default():
-            ATARI_SHAPE = (self.state_size[0], self.state_size[1], self.skip_frames)  # input image size to model
-            ACTION_SIZE = self.action_size
-            # With the functional API we need to define the inputs.
-            frames_input = layers.Input(ATARI_SHAPE, name='frames')
-            actions_input = layers.Input((ACTION_SIZE,), name='action_mask')
-
-            # Assuming that the input frames are still encoded from 0 to 255. Transforming to [0, 1].
-            normalized = layers.Lambda(lambda x: x / 255.0, name='normalization')(frames_input)
-
-            # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
-            conv_1 = layers.convolutional.Conv2D(
-                16, (8, 8), strides=(4, 4), activation='relu'
-            )(normalized)
-            # "The second hidden layer convolves 32 4×4 filters with stride 2, again followed by a rectifier nonlinearity."
-            conv_2 = layers.convolutional.Conv2D(
-                32, (4, 4), strides=(2, 2), activation='relu'
-            )(conv_1)
-            # Flattening the second convolutional layer.
-            conv_flattened = layers.core.Flatten()(conv_2)
-            # "The final hidden layer is fully-connected and consists of 256 rectifier units."
-            hidden = layers.Dense(256, activation='relu')(conv_flattened)
-            # "The output layer is a fully-connected linear layer with a single output for each valid action."
-            output = layers.Dense(ACTION_SIZE)(hidden)
-            # Finally, we multiply the output by the mask!
-            filtered_output = layers.Multiply(name='QValue')([output, actions_input])
-
-            model = Model(inputs=[frames_input, actions_input], outputs=filtered_output)
-            model.summary()
-            optimizer = RMSprop(lr=self.learning_rate, rho=0.95, epsilon=0.01)
-            # model.compile(optimizer, loss='mse')
-            # to changed model weights more slowly, uses MSE for low values and MAE(Mean Absolute Error) for large values
-            model.compile(optimizer, loss=huber_loss)
-            return model
-
-    def front2back(self):
-        with self.graph.as_default():
-            self.back_model.set_weights(self.model.get_weights())
-
-    def back2front(self):
-        with self.graph.as_default():
-            self.model.set_weights(self.back_model.get_weights())
-
-    def load(self, name):
-        with self.graph.as_default():
-            self.model.load_weights(name)
-
-    def save(self, name):
-        with self.graph.as_default():
-            self.model.save_weights(name)
-
-    def load_back(self, name):
-        with self.graph.as_default():
-            self.back_model.load_weights(name)
-
-    def save_back(self, name):
-        with self.graph.as_default():
-            self.back_model.save_weights(name)
-
-class AsyncAgent:
-    def __init__(self, ID):
         self.thread_id = ID
         self.gradient = None
         self.thread = None
@@ -229,14 +87,14 @@ class AsyncAgent:
             else:
                 self.epsilon = self.epsilon_min
 
-    def act(self, shared, state, is_randomic = False):
+    def act(self, graph, model, state, is_randomic = False):
         action = 0
         p = np.random.rand()
         if is_randomic or p <= self.epsilon:
             self.update_epsilon(is_randomic)
             return np.random.choice(self.contextual_actions)
         else:
-            act_values = shared.model.predict([state, shared.mask_actions])
+            act_values = model.predict([state, self.mask_actions])
             logger_debug.debug("ACTION VALUES %s" % (act_values))
             action = np.argmax(act_values[0])
             #print("MODEL SELECTED ACTION ::::::: %s" % (action))
@@ -246,10 +104,18 @@ class AsyncAgent:
     def reset(self):
         pass
 
+    #https://github.com/keras-team/keras/issues/2226
+    def get_gradient(self, x, mask, label):
+        return [ x, mask, # X
+               [1], # sample weights
+               label, # y
+               0 # learning phase in TEST mode
+        ]
 
-    def gradient_update(self, shared, state, action, reward, next_state, is_done):
-        with shared.graph.as_default():
-            next_Q_value = shared.back_model.predict([next_state, shared.mask_actions])[0]        
+    def gradient_update(self, graph, model, back_model, state, action, reward, next_state, is_done):
+        import utils
+        with graph.as_default():
+            next_Q_value = back_model.predict([next_state, self.mask_actions])[0]        
             if is_done:
                 target = reward
             else:
@@ -257,102 +123,127 @@ class AsyncAgent:
             targets = np.zeros(1)
             targets[0] = target
 
-            action_one_hot = get_one_hot([action], shared.action_size) 
+            action_one_hot = utils.get_one_hot([action], self.action_size) 
             target_one_hot = action_one_hot * targets[:, None]
-            
-            gradient = (state, action_one_hot, target_one_hot)
-            
-            shared.gradients.append(gradient)
+                        
+            q_values = model.predict([state, self.mask_actions])
+            loss = np.sum((target_one_hot - q_values)**2)/self.action_size
+
+            gradient = self.get_gradient(state, action_one_hot, target_one_hot)
+
+            self.gradients.append( (gradient, loss) )
      
 
-    def run(self, queue):
-        if self.env == None:
-            self.env =  gym.make('BreakoutDeterministic-v4')   
-        shared = queue.get()
-        with shared.graph.as_default():
-            self.locked = True
-            self.env.reset()
-            frame = self.env.reset()  
+def run(ID, in_queue, out_queue):
+    import tensorflow as tf
+    import utils
+    agent = AsyncAgent(ID, (84, 84), 3)
+    agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/1000000)
+    #print(agent.ID)
+    graph = tf.get_default_graph()
+    model, back_model = utils.get_model_pair(graph, agent.state_size, agent.skip_frames, agent.action_size, agent.learning_rate)
 
-            if self.RENDER:
-                self.env.render()
+    while True:        
+        T, MAX_T, params, back_params = in_queue.get()
 
-            # this is one of DeepMind's idea.
-            # just do nothing at the start of episode to avoid sub-optimal
-            for _ in range(random.randint(1, self.NO_OP_STEPS)):
-                frame, _, _, _ = self.env.step(1)
+        if T >= MAX_T:
+            break
 
-            frame = pre_processing(frame)
-            stack_frame = tuple([frame]*shared.skip_frames)
-            initial_state = np.stack(stack_frame, axis=2)
-            initial_state = np.reshape([initial_state], (1, 84, 84, shared.skip_frames))
+        with graph.as_default():
+            #>print(params)
+            model.set_weights(params)
+            back_model.set_weights(back_params)
+        
+        if agent.env == None:
+            agent.env =  gym.make('BreakoutDeterministic-v4')
+       
 
-            self.reset()
+        agent.env.reset()
+        frame = agent.env.reset()
+        if agent.RENDER:
+            agent.env.render()
 
-            LOSS = 0
-            score, start_life = 0, 5
-            is_done = False
+        # this is one of DeepMind's idea.
+        # just do nothing at the start of episode to avoid sub-optimal
+        for _ in range(random.randint(1, agent.NO_OP_STEPS)):
+            frame, _, _, _ = agent.env.step(1)
 
-            dead = False
+        frame = pre_processing(frame)
+        stack_frame = tuple([frame]*agent.skip_frames)
+        initial_state = np.stack(stack_frame, axis=2)
+        initial_state = np.reshape([initial_state], (1, 84, 84, agent.skip_frames))
 
-            action = 0
-            next_state = None
-            step  = 0   
-            #print("------------------------------------------------------------------------------%s"%(is_done))
-            while not is_done:
-                if shared.shared_time >= self.N_RANDOM_STEPS:
-                    action = self.act(shared, initial_state)
-                else:
-                    action = self.act(shared, initial_state, True)
+        agent.reset()
 
-                frame, reward, is_done, info = self.env.step(action+1)
-                #print(is_done)
-                next_frame = pre_processing(frame)
-                next_state = np.reshape([next_frame], (1, 84, 84, 1))
-                next_state = np.append(next_state, initial_state[:, :, :, :3], axis=3)
+        LOSS = 0
+        score, start_life = 0, 5
+        is_done = False
 
-                if start_life > info['ale.lives']:
-                    reward = -1
-                    dead = True
-                    start_life = info['ale.lives']
-                
-                reward = np.clip(reward, -1.0, 1.0)
-                
-                score += reward
-                
-                logger_debug.debug("REWARD TO ACTION %d is %d" % (action, reward))
+        dead = False
 
-                opt = shared.model.optimizer
+        action = 0
+        next_state = None
+        step  = 0   
+        #print("------------------------------------------------------------------------------%s"%(is_done))
+        while not is_done:
+            if agent.thread_time >= agent.N_RANDOM_STEPS:
+                action = agent.act(graph, model, initial_state)
+            else:
+                action = agent.act(graph, model, initial_state, True)
 
-                if shared.shared_time >= self.N_RANDOM_STEPS:
-                    self.gradient_update(shared, initial_state, action, reward, next_state, dead)
-                    if shared.shared_time % self.REFRESH_MODEL_NUM == 0:
-                        shared.back2front()
+            frame, reward, is_done, info = agent.env.step(action+1)
+            #print(is_done)
+            next_frame = pre_processing(frame)
+            next_state = np.reshape([next_frame], (1, 84, 84, 1))
+            next_state = np.append(next_state, initial_state[:, :, :, :3], axis=3)
 
-                    if (self.thread_time % self.ASYNC_UPDATE) == 0:
+            if start_life > info['ale.lives']:
+                reward = -1
+                dead = True
+                start_life = info['ale.lives']
+            
+            reward = np.clip(reward, -1.0, 1.0)
+            
+            score += reward
+            
+            logger_debug.debug("REWARD TO ACTION %d is %d" % (action, reward))
+
+            opt = model.optimizer
+
+            if T % agent.REFRESH_MODEL_NUM == 0:
+                utils.front2back(graph, model, back_model)
+
+            if agent.thread_time >= agent.N_RANDOM_STEPS:
+                agent.gradient_update(graph, model, back_model, initial_state, action, reward, next_state, dead)
+
+                if (agent.thread_time % agent.ASYNC_UPDATE) == 0:
+                    if len(agent.gradients) >= agent.ASYNC_UPDATE:
                         avg_loss = 0.0
-                        tensors = shared.model.trainable_weights
-                        for gradient in list(shared.gradients):
+                        tensors = model.trainable_weights
+                        random.shuffle(agent.gradient)
+                        for gradient in list(agent.gradients):
                             t_tensors = []
-                            loss = shared.model.train_on_batch([gradient[0], gradient[1]], gradient[2])
+                            loss = model.train_on_batch([gradient[0], gradient[1]], gradient[2])
                             avg_loss += loss
-                        LOSS = avg_loss/len(shared.gradients)
-                        print("CURRENT LOSS ON THREAD %d === %f"%(self.thread_id, LOSS))
-                        shared.gradients.clear()
-                if dead:
-                    dead = False
-                else:
-                    initial_state = next_state
-                if self.RENDER:
-                    self.env.render()
-            
-                shared.shared_time += 1
-                self.thread_time += 1
-                step += 1
-            logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d." % (
-                self.thread_time, score, self.epsilon, step, self.thread_time))
-            print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d." % (
-                self.thread_time, score, self.epsilon, step, self.thread_time))
-            
-            self.locked = False
+                        LOSS = avg_loss/len(agent.gradients)
 
+                        print("CURRENT LOSS ON THREAD %d === %f"%(agent.thread_id, LOSS))
+                        agent.gradients.clear()
+
+            if dead:
+                dead = False
+            else:
+                initial_state = next_state
+            if agent.RENDER:
+                agent.env.render()
+
+            agent.thread_time += 1
+            step += 1
+        logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d." % (
+            agent.thread_time, score, agent.epsilon, step, agent.thread_time))
+        print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d." % (
+            agent.thread_time, score, agent.epsilon, step, agent.thread_time))
+        
+        #print("FIM %d"%(agent.ID))
+        out_queue.put( (model.get_weights(), back_model.get_weights(), agent) )
+    out_queue.put(None, None, agent)
