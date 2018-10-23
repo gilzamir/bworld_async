@@ -189,7 +189,7 @@ def run(ID, in_queue, out_queue):
             action = 0
             next_state = None
             step  = 0   
-            #print("------------------------------------------------------------------------------%s"%(is_done))
+            update_counter = 0
             while not is_done:
                 UPDATED = False
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
@@ -231,9 +231,8 @@ def run(ID, in_queue, out_queue):
                                 t_tensors = []
                                 loss = model.train_on_batch([gradient[0], gradient[1]], gradient[3])
                                 avg_loss += loss
-                            LOSS = avg_loss/len(agent.gradients)
-
-                            print("CURRENT LOSS ON THREAD %d === %f"%(agent.thread_id, LOSS))
+                            LOSS += avg_loss/len(agent.gradients)
+                            update_counter += 1
                             agent.gradients.clear()
                             UPDATED = True
 
@@ -246,19 +245,28 @@ def run(ID, in_queue, out_queue):
 
                 agent.thread_time += 1
                 step += 1
-            logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d." % (
-                T, score, agent.epsilon, step, agent.thread_time))
-            print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d." % (
-                T, score, agent.epsilon, step, agent.thread_time))
-            
+                if update_counter > 0:
+                    LOSS = LOSS/update_counter
+                    
+                    logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d. AVG_LOSS %f" % (
+                        T, score, agent.epsilon, step, agent.thread_time, LOSS))
+                    
+                    print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d. AVG_LOSS %f" % (
+                        T, score, agent.epsilon, step, agent.thread_time, LOSS))
+                else:
+                    print("STEPS IS %d. GSTEPS IS %d."%(step, agent.thread_time))
+
+            if update_counter == 0:
+                update_counter = 1
+
             #print("FIM %d"%(agent.ID))
             out_queue.put( (model.get_weights(), back_model.get_weights(), UPDATED) )
             in_queue.task_done()
             T += 1
         except Exception as e:
-            print("error")
+            print("error %"%(s))
             pass
-    out_queue.put(None, None, UPDATED)
+    out_queue.put(None, None, UPDATED, 0.0)
     in_queue.task_done()
 
  
