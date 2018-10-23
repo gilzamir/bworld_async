@@ -21,6 +21,11 @@ from skimage.transform import rotate
 from keras.utils.np_utils import to_categorical
 from multiprocessing import Queue, Process, Pipe
 import numpy as np
+import time
+
+def get_one_hot(targets, nb_classes):
+    return np.eye(nb_classes)[np.array(targets).reshape(-1)]
+
 
 def pre_processing(observe):
     processed_observe = np.uint8(
@@ -74,7 +79,7 @@ class AsyncAgent:
         self.locked = False
         self.RENDER = False
         self.REFRESH_MODEL_NUM = 10000
-        self.N_RANDOM_STEPS = 50000
+        self.N_RANDOM_STEPS = 500
         self.NO_OP_STEPS = 30
         self.ASYNC_UPDATE = 100
         self.env = None
@@ -113,25 +118,24 @@ class AsyncAgent:
         ]
 
     def gradient_update(self, graph, model, back_model, state, action, reward, next_state, is_done):
-        import utils
-        with graph.as_default():
-            next_Q_value = back_model.predict([next_state, self.mask_actions])[0]        
-            if is_done:
-                target = reward
-            else:
-                target = reward + self.gamma * np.amax(next_Q_value)
-            targets = np.zeros(1)
-            targets[0] = target
+        next_Q_value = back_model.predict([next_state, self.mask_actions])[0]  
+        if is_done:
+            target = reward
+        else:
+            target = reward + self.gamma * np.amax(next_Q_value)
+        targets = np.zeros(1)
+        targets[0] = target
+        #---
+        
+        action_one_hot = get_one_hot([action], self.action_size) 
+        target_one_hot = action_one_hot * targets[:, None]
+        
+        #q_values = model.predict([state, self.mask_actions])
 
-            action_one_hot = utils.get_one_hot([action], self.action_size) 
-            target_one_hot = action_one_hot * targets[:, None]
-                        
-            q_values = model.predict([state, self.mask_actions])
-            loss = np.sum((target_one_hot - q_values)**2)/self.action_size
+        #loss = np.sum((target_one_hot - q_values)**2)/self.action_size
+        gradient = self.get_gradient(state, action_one_hot, target_one_hot)
 
-            gradient = self.get_gradient(state, action_one_hot, target_one_hot)
-
-            self.gradients.append( (gradient, loss) )
+        self.gradients.append(gradient)
      
 
 def run(ID, in_queue, out_queue):
@@ -142,108 +146,120 @@ def run(ID, in_queue, out_queue):
     #print(agent.ID)
     graph = tf.get_default_graph()
     model, back_model = utils.get_model_pair(graph, agent.state_size, agent.skip_frames, agent.action_size, agent.learning_rate)
+    MAX_T = 1000000
+    T = 0
+    while True:
+        try:
+            params, back_params = in_queue.get()
 
-    while True:        
-        T, MAX_T, params, back_params = in_queue.get()
+            if T >= MAX_T:
+                break
 
-        if T >= MAX_T:
-            break
-
-        with graph.as_default():
-            #>print(params)
-            model.set_weights(params)
-            back_model.set_weights(back_params)
-        
-        if agent.env == None:
-            agent.env =  gym.make('BreakoutDeterministic-v4')
-       
-
-        agent.env.reset()
-        frame = agent.env.reset()
-        if agent.RENDER:
-            agent.env.render()
-
-        # this is one of DeepMind's idea.
-        # just do nothing at the start of episode to avoid sub-optimal
-        for _ in range(random.randint(1, agent.NO_OP_STEPS)):
-            frame, _, _, _ = agent.env.step(1)
-
-        frame = pre_processing(frame)
-        stack_frame = tuple([frame]*agent.skip_frames)
-        initial_state = np.stack(stack_frame, axis=2)
-        initial_state = np.reshape([initial_state], (1, 84, 84, agent.skip_frames))
-
-        agent.reset()
-
-        LOSS = 0
-        score, start_life = 0, 5
-        is_done = False
-
-        dead = False
-
-        action = 0
-        next_state = None
-        step  = 0   
-        #print("------------------------------------------------------------------------------%s"%(is_done))
-        while not is_done:
-            if agent.thread_time >= agent.N_RANDOM_STEPS:
-                action = agent.act(graph, model, initial_state)
-            else:
-                action = agent.act(graph, model, initial_state, True)
-
-            frame, reward, is_done, info = agent.env.step(action+1)
-            #print(is_done)
-            next_frame = pre_processing(frame)
-            next_state = np.reshape([next_frame], (1, 84, 84, 1))
-            next_state = np.append(next_state, initial_state[:, :, :, :3], axis=3)
-
-            if start_life > info['ale.lives']:
-                reward = -1
-                dead = True
-                start_life = info['ale.lives']
+            with graph.as_default():
+                #>print(params)
+                model.set_weights(params)
+                back_model.set_weights(back_params)
             
-            reward = np.clip(reward, -1.0, 1.0)
-            
-            score += reward
-            
-            logger_debug.debug("REWARD TO ACTION %d is %d" % (action, reward))
+            if agent.env == None:
+                agent.env =  gym.make('BreakoutDeterministic-v4')
 
-            opt = model.optimizer
-
-            if T % agent.REFRESH_MODEL_NUM == 0:
-                utils.front2back(graph, model, back_model)
-
-            if agent.thread_time >= agent.N_RANDOM_STEPS:
-                agent.gradient_update(graph, model, back_model, initial_state, action, reward, next_state, dead)
-
-                if (agent.thread_time % agent.ASYNC_UPDATE) == 0:
-                    if len(agent.gradients) >= agent.ASYNC_UPDATE:
-                        avg_loss = 0.0
-                        tensors = model.trainable_weights
-                        random.shuffle(agent.gradient)
-                        for gradient in list(agent.gradients):
-                            t_tensors = []
-                            loss = model.train_on_batch([gradient[0], gradient[1]], gradient[2])
-                            avg_loss += loss
-                        LOSS = avg_loss/len(agent.gradients)
-
-                        print("CURRENT LOSS ON THREAD %d === %f"%(agent.thread_id, LOSS))
-                        agent.gradients.clear()
-
-            if dead:
-                dead = False
-            else:
-                initial_state = next_state
+            agent.env.reset()
+            frame = agent.env.reset()
             if agent.RENDER:
                 agent.env.render()
 
-            agent.thread_time += 1
-            step += 1
-        logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d." % (
-            agent.thread_time, score, agent.epsilon, step, agent.thread_time))
-        print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d." % (
-            agent.thread_time, score, agent.epsilon, step, agent.thread_time))
-        
-        #print("FIM %d"%(agent.ID))
-        out_queue.put( (model.get_weights(), back_model.get_weights(), agent) )
-    out_queue.put(None, None, agent)
+            # this is one of DeepMind's idea.
+            # just do nothing at the start of episode to avoid sub-optimal
+            for _ in range(random.randint(1, agent.NO_OP_STEPS)):
+                frame, _, _, _ = agent.env.step(1)
+
+            frame = pre_processing(frame)
+            stack_frame = tuple([frame]*agent.skip_frames)
+            initial_state = np.stack(stack_frame, axis=2)
+            initial_state = np.reshape([initial_state], (1, 84, 84, agent.skip_frames))
+
+            agent.reset()
+
+            LOSS = 0
+            score, start_life = 0, 5
+            is_done = False
+
+            dead = False
+
+            action = 0
+            next_state = None
+            step  = 0   
+            #print("------------------------------------------------------------------------------%s"%(is_done))
+            while not is_done:
+                UPDATED = False
+                if agent.thread_time >= agent.N_RANDOM_STEPS:
+                    action = agent.act(graph, model, initial_state)
+                else:
+                    action = agent.act(graph, model, initial_state, True)
+
+                frame, reward, is_done, info = agent.env.step(action+1)
+                #print(is_done)
+                next_frame = pre_processing(frame)
+                next_state = np.reshape([next_frame], (1, 84, 84, 1))
+                next_state = np.append(next_state, initial_state[:, :, :, :3], axis=3)
+
+                if start_life > info['ale.lives']:
+                    reward = -1
+                    dead = True
+                    start_life = info['ale.lives']
+                
+                reward = np.clip(reward, -1.0, 1.0)
+                
+                score += reward
+                
+                logger_debug.debug("REWARD TO ACTION %d is %d" % (action, reward))
+
+                opt = model.optimizer
+
+                if T % agent.REFRESH_MODEL_NUM == 0:
+                    utils.front2back(graph, model, back_model)
+                    
+                if agent.thread_time >= agent.N_RANDOM_STEPS:
+                    agent.gradient_update(graph, model, back_model, initial_state, action, reward, next_state, dead)
+                    if (agent.thread_time % agent.ASYNC_UPDATE) == 0:
+                        if len(agent.gradients) >= agent.ASYNC_UPDATE:
+                            avg_loss = 0.0
+                            tensors = model.trainable_weights
+                            random.shuffle(agent.gradients)
+                    
+                            for gradient in list(agent.gradients):
+                                t_tensors = []
+                                loss = model.train_on_batch([gradient[0], gradient[1]], gradient[3])
+                                avg_loss += loss
+                            LOSS = avg_loss/len(agent.gradients)
+
+                            print("CURRENT LOSS ON THREAD %d === %f"%(agent.thread_id, LOSS))
+                            agent.gradients.clear()
+                            UPDATED = True
+
+                if dead:
+                    dead = False
+                else:
+                    initial_state = next_state
+                if agent.RENDER:
+                    agent.env.render()
+
+                agent.thread_time += 1
+                step += 1
+            logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d." % (
+                T, score, agent.epsilon, step, agent.thread_time))
+            print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d." % (
+                T, score, agent.epsilon, step, agent.thread_time))
+            
+            #print("FIM %d"%(agent.ID))
+            out_queue.put( (model.get_weights(), back_model.get_weights(), UPDATED) )
+            in_queue.task_done()
+            T += 1
+        except Exception as e:
+            print("error")
+            pass
+    out_queue.put(None, None, UPDATED)
+    in_queue.task_done()
+
+ 
+

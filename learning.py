@@ -4,6 +4,8 @@ from collections import deque
 import logging
 from multiprocessing import Queue, Process,  Manager, Pool
 import random
+import queue
+import time
 
 
 logger_debug = logging.getLogger(__name__)
@@ -38,22 +40,18 @@ def run_learning(input_queue, output_queue, max_threads):
     utils.front2back(graph, model, back_model)
     weights = model.get_weights()
     back_weights =back_model.get_weights()
-    MAX_EPSODES = 10000000
-    i = 0
+
     while True:
         for j in range(max_threads):
-            output_queue.put((i, MAX_EPSODES, weights, back_weights))
-        
-        w, bw, a = input_queue.get()
+            output_queue.put((weights, back_weights))
+        output_queue.join()
 
-        for p, new_p  in list(zip(weights, w)):
-            p = p + new_p
-
-        i += 1
-        print("Epoch: %d"%(i))
-
-
-
+        while not input_queue.empty():
+            w, bw, updated = input_queue.get()
+            if (updated):
+                params = list(zip(weights, w))
+                for p, new_p  in params:
+                    p = p + new_p * 1.0/max_threads
 def main():
     m = Manager()
     agents = []
@@ -62,7 +60,7 @@ def main():
 
     pool = Pool()
     input_queue = m.Queue()
-    output_queue = m.Queue()
+    output_queue = m.JoinableQueue()
     pool.apply_async(run_learning, (input_queue, output_queue, MAX_THREADS))
 
     for j in range(MAX_THREADS):
