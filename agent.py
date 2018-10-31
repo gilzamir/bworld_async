@@ -43,7 +43,7 @@ handler.setLevel(logging.DEBUG)
 logger_debug.addHandler(handler)
 logger_debug.propagate = False
 
-REFRESH_MODEL_NUM = 500
+REFRESH_MODEL_NUM = 10
 
 def sample(buffer, size):
     indices = random.sample(range(len(buffer)), size)
@@ -75,12 +75,12 @@ class AsyncAgent:
         self.epsilon_min = np.random.normal(0.05, 0.05)
         self.epsilon_decay = np.random.normal(0.9, 0.09)
         self.gamma = np.random.normal(0.9, 0.09)
-        self.batch_size = 1
+        self.batch_size = 8
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
-        self.N_RANDOM_STEPS = 12000
+        self.N_RANDOM_STEPS = 12500
         self.NO_OP_STEPS = 30
-        self.ASYNC_UPDATE = 100
+        self.ASYNC_UPDATE = np.random.choice([1, 2, 3, 4])
         self.env = None
 
     def update_epsilon(self, is_randomic=False):
@@ -239,16 +239,12 @@ def run(ID, in_queue, out_queue):
 
                 agent.thread_time += 1
                 step += 1
-                if update_counter > 0:
-                    LOSS = LOSS/update_counter
-                    
-                    logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d. AVG_LOSS %f" % (
-                        T, score, agent.epsilon, step, agent.thread_time, LOSS))
-                    
-                    #print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d. AVG_LOSS %f" % (
-                    #    T, score, agent.epsilon, step, agent.thread_time, LOSS))
-                #else:
-                    #print("STEPS IS %d. GSTEPS IS %d."%(step, agent.thread_time))
+
+            if update_counter > 0:
+                LOSS = LOSS/update_counter
+                
+                logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d. AVG_LOSS %f" % (
+                    T, score, agent.epsilon, step, agent.thread_time, LOSS))
 
             if update_counter == 0:
                 update_counter = 1
