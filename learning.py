@@ -44,18 +44,37 @@ def run_learning(input_queue, output_queue, max_threads):
     utils.front2back(graph, model, back_model)
     weights = model.get_weights()
     back_weights =back_model.get_weights()
-
+    T = 0
     while True:
+        if T > 0 and T % agent.REFRESH_MODEL_NUM == 0:
+            utils.front2back(graph, model, back_model)
+
         for j in range(max_threads):
             output_queue.put((weights, back_weights))
         output_queue.join()
 
+        avg_loss = 0.0
+        avg_score = 0.0
+        avg_steps = 0.0
+        c = 0
+        epslon = np.array(4)
         while not input_queue.empty():
-            w, bw, updated = input_queue.get()
+            w, bw, updated, score, loss, steps, epslon = input_queue.get()
+            avg_loss += loss
+            avg_score += score
+            avg_steps += steps
+            epslon[c] = epslon
             if (updated):
                 params = list(zip(weights, w))
                 for p, new_p  in params:
                     p = p + new_p * 1.0/max_threads
+            c += 1
+        if c > 0:
+            avg_loss = avg_loss/c
+            avg_steps = avg_steps/c
+            avg_score = avg_score/c
+            print("Global time: %d,  Avg Steps: %f, Avg Score: %f, Avg Loss: %f, Epsilon: %s"%(T, avg_steps, avg_score, avg_loss, epslon))
+        T += 1
 def main():
     m = Manager()
     agents = []

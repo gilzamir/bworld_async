@@ -43,6 +43,7 @@ handler.setLevel(logging.DEBUG)
 logger_debug.addHandler(handler)
 logger_debug.propagate = False
 
+REFRESH_MODEL_NUM = 500
 
 def sample(buffer, size):
     indices = random.sample(range(len(buffer)), size)
@@ -74,9 +75,9 @@ class AsyncAgent:
         self.epsilon_min = 0.05
         self.epsilon_decay = 0.999
         self.gamma = 0.99
+        self.batch_size = 32
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
-        self.REFRESH_MODEL_NUM = 500
         self.N_RANDOM_STEPS = 12000
         self.NO_OP_STEPS = 30
         self.ASYNC_UPDATE = 100
@@ -128,9 +129,7 @@ class AsyncAgent:
         action_one_hot = get_one_hot([action], self.action_size) 
         target_one_hot = action_one_hot * targets[:, None]
         
-        #q_values = model.predict([state, self.mask_actions])
 
-        #loss = np.sum((target_one_hot - q_values)**2)/self.action_size
         gradient = self.get_gradient(state, action_one_hot, target_one_hot)
 
         self.gradients.append(gradient)
@@ -217,29 +216,20 @@ def run(ID, in_queue, out_queue):
                 score += reward
                 
                 logger_debug.debug("REWARD TO ACTION %d is %d" % (action, reward))
-
-                opt = model.optimizer
-
-                if T % agent.REFRESH_MODEL_NUM == 0:
-                    utils.front2back(graph, model, back_model)
-                    
+ 
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
                     agent.gradient_update(graph, model, back_model, initial_state, action, reward, next_state, dead)
-                    if (agent.thread_time % agent.ASYNC_UPDATE) == 0:
-                        if len(agent.gradients) >= agent.ASYNC_UPDATE:
-                            
-                            avg_loss = 0.0
-
-                            random.shuffle(agent.gradients)
-                    
-                            for gradient in list(agent.gradients):
-                                loss = model.train_on_batch([gradient[0], gradient[1]], gradient[3])
-                                avg_loss += loss
-                            LOSS += avg_loss/len(agent.gradients)
-                            update_counter += 1
+                    if len(agent.gradients) >= agent.batch_size:
+                        avg_loss = 0.0
+                        gradients = random.sample(list(agent.gradients), agent.batch_size)
+                        for gradient in gradients:
+                            loss = model.train_on_batch([gradient[0], gradient[1]], gradient[3])
+                            avg_loss += loss
+                        LOSS += avg_loss/agent.batch_size
+                        update_counter += 1
+                        if (agent.thread_time > 0 and agent.thread_time % agent.ASYNC_UPDATE == 0):
                             agent.gradients.clear()
                             UPDATED = True
-
                 if dead:
                     dead = False
                 else:
@@ -255,16 +245,16 @@ def run(ID, in_queue, out_queue):
                     logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d. AVG_LOSS %f" % (
                         T, score, agent.epsilon, step, agent.thread_time, LOSS))
                     
-                    print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d. AVG_LOSS %f" % (
-                        T, score, agent.epsilon, step, agent.thread_time, LOSS))
-                else:
-                    print("STEPS IS %d. GSTEPS IS %d."%(step, agent.thread_time))
+                    #print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d. AVG_LOSS %f" % (
+                    #    T, score, agent.epsilon, step, agent.thread_time, LOSS))
+                #else:
+                    #print("STEPS IS %d. GSTEPS IS %d."%(step, agent.thread_time))
 
             if update_counter == 0:
                 update_counter = 1
 
             #print("FIM %d"%(agent.ID))
-            out_queue.put( (model.get_weights(), back_model.get_weights(), UPDATED) )
+            out_queue.put( (model.get_weights(), back_model.get_weights(), UPDATED, score, LOSS, step, agent.epsilon) )
             in_queue.task_done()
             T += 1
         except Exception as e:
