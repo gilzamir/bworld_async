@@ -29,7 +29,11 @@ skip_frames = 4
 def run_learning(input_queue, output_queue, max_threads):
     import tensorflow as tf
     import utils
-
+    from keras.backend.tensorflow_backend import set_session
+    config = tf.ConfigProto()
+    config.gpu_options.per_process_gpu_memory_fraction = 0.3
+    #config.gpu_options.gpu_options.allow_growth = True
+    set_session(tf.Session(config=config))
     state_size = (84, 84)
     action_size = 3
     learning_rate = 0.0025

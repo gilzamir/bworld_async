@@ -139,6 +139,12 @@ class AsyncAgent:
 def run(ID, in_queue, out_queue):
     import tensorflow as tf
     import utils
+    from keras.backend.tensorflow_backend import set_session
+    config = tf.ConfigProto()
+    config.gpu_options.per_process_gpu_memory_fraction = 0.15
+    #config.gpu_options.gpu_options.allow_growth = True
+    set_session(tf.Session(config=config))
+
     agent = AsyncAgent(ID, (84, 84), 3)
     agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/1000000)
     #print(agent.ID)
@@ -221,12 +227,12 @@ def run(ID, in_queue, out_queue):
                     agent.gradient_update(graph, model, back_model, initial_state, action, reward, next_state, dead)
                     if (agent.thread_time % agent.ASYNC_UPDATE) == 0:
                         if len(agent.gradients) >= agent.ASYNC_UPDATE:
+                            
                             avg_loss = 0.0
-                            tensors = model.trainable_weights
+
                             random.shuffle(agent.gradients)
                     
                             for gradient in list(agent.gradients):
-                                t_tensors = []
                                 loss = model.train_on_batch([gradient[0], gradient[1]], gradient[3])
                                 avg_loss += loss
                             LOSS += avg_loss/len(agent.gradients)
