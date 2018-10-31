@@ -72,10 +72,10 @@ class AsyncAgent:
         self.thread = None
         self.thread_time = 0
         self.epsilon = 1.0
-        self.epsilon_min = 0.05
-        self.epsilon_decay = 0.999
-        self.gamma = 0.99
-        self.batch_size = 32
+        self.epsilon_min = np.random.normal(0.05, 0.05)
+        self.epsilon_decay = np.random.normal(0.9, 0.09)
+        self.gamma = np.random.normal(0.9, 0.09)
+        self.batch_size = 1
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
         self.N_RANDOM_STEPS = 12000
@@ -145,7 +145,7 @@ def run(ID, in_queue, out_queue):
     set_session(tf.Session(config=config))
 
     agent = AsyncAgent(ID, (84, 84), 3)
-    agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/1000000)
+    agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/250000)
     #print(agent.ID)
     graph = tf.get_default_graph()
     model, back_model = utils.get_model_pair(graph, agent.state_size, agent.skip_frames, agent.action_size, agent.learning_rate)

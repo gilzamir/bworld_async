@@ -57,23 +57,23 @@ def run_learning(input_queue, output_queue, max_threads):
         avg_score = 0.0
         avg_steps = 0.0
         c = 0
-        epslon = np.array(4)
+        epsilon = list(range(max_threads))  
         while not input_queue.empty():
-            w, bw, updated, score, loss, steps, epslon = input_queue.get()
-            avg_loss += loss
-            avg_score += score
-            avg_steps += steps
-            epslon[c] = epslon
+            w, bw, updated, score, loss, steps, eps = input_queue.get()
             if (updated):
+                avg_loss += loss
+                avg_score += score
+                avg_steps += steps
+                epsilon[c] = eps
                 params = list(zip(weights, w))
                 for p, new_p  in params:
                     p = p + new_p * 1.0/max_threads
-            c += 1
+                c += 1
         if c > 0:
             avg_loss = avg_loss/c
             avg_steps = avg_steps/c
             avg_score = avg_score/c
-            print("Global time: %d,  Avg Steps: %f, Avg Score: %f, Avg Loss: %f, Epsilon: %s"%(T, avg_steps, avg_score, avg_loss, epslon))
+            print("Global time: %d,  Avg Steps: %f, Avg Score: %f, Avg Loss: %f, Epsilon: %s"%(T, avg_steps, avg_score, avg_loss, epsilon))
         T += 1
 def main():
     m = Manager()
