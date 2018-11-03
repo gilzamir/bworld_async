@@ -43,17 +43,16 @@ def run_learning(input_queue, output_queue, max_threads):
         graph = tf.get_default_graph()
         model, back_model = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate)
         utils.front2back(graph, model, back_model)
-        weights = model.get_weights()
-        back_weights =back_model.get_weights()
         T = 0
         while True:
             if T > 0 and T % agent.REFRESH_MODEL_NUM == 0:
                 utils.front2back(graph, model, back_model)
 
-            for j in range(max_threads):
-                output_queue.put((weights, back_weights))
+            for _ in range(max_threads):
+                output_queue.put((model.get_weights(), back_model.get_weights()))
             output_queue.join()
 
+            weights = model.get_weights()
             avg_loss = 0.0
             avg_score = 0.0
             avg_steps = 0.0
@@ -61,15 +60,19 @@ def run_learning(input_queue, output_queue, max_threads):
             epsilon = [0]*max_threads 
             it = 0 
             while not input_queue.empty():
-                w, bw, updated, score, loss, steps, eps = input_queue.get()
+                gradient, updated, score, loss, steps, eps, thread_id = input_queue.get()
                 avg_score += score
                 avg_steps += steps
                 if (updated):
                     avg_loss += loss
-                    epsilon[c] = eps
-                    params = list(zip(weights, w))
+                    epsilon[it] = eps
+                    params = list(zip(weights, gradient))
+                    idx = 0
                     for p, new_p  in params:
-                        p = p + new_p * 1.0/max_threads
+                        p = p + new_p
+                        weights[idx] = p
+                        idx += 1
+                    model.set_weights(weights)
                     updates += 1
                 it += 1
             if it > 0:
@@ -77,9 +80,9 @@ def run_learning(input_queue, output_queue, max_threads):
                 avg_score = avg_score/it
                 if updates > 0:
                     avg_loss = avg_loss/updates
-                    print("Global time: %d,  Avg Steps: %f, Avg Score: %f, Avg Loss: %f, Epsilon: %s"%(T, avg_steps, avg_score, avg_loss, epsilon))
+                    print("TID: %d, Global time: %d,  Avg Steps: %f, Avg Score: %f, Avg Loss: %f, Epsilon: %s"%(thread_id, T, avg_steps, avg_score, avg_loss, epsilon))
                 else:
-                    print("Global time: %d, Avg Steps: %f, Avg Score: %f"%(T, avg_steps, avg_score))
+                    print("TID: %d, Global time: %d, Avg Steps: %f, Avg Score: %f"%(thread_id, T, avg_steps, avg_score))
             T += 1
     except Exception as e:
         print(e)
