@@ -21,7 +21,7 @@ while i < 100:
   env.render()
 
 
-
+  env.step(1)
   is_done = False
 
   LIVES = 5
@@ -30,10 +30,11 @@ while i < 100:
 
     # Perform a random action, returns the new frame, reward and whether the game is over
 
-    frame, reward, is_done, info = env.step(3)
+    frame, reward, is_done, info = env.step(0)
     # Render
-    if info['ale.lives'] == 1:
-      print('teste')
+    if info['ale.lives'] < LIVES:
+      env.step(1)
+      LIVES -= 1
 
     env.render()
   i += 1

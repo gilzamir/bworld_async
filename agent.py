@@ -157,8 +157,8 @@ def run(ID, in_queue, out_queue):
 
             # this is one of DeepMind's idea.
             # just do nothing at the start of episode to avoid sub-optimal
-            for _ in range(random.randint(1, agent.NO_OP_STEPS)):
-                frame, _, _, _ = agent.env.step(1)
+            #for _ in range(random.randint(1, agent.NO_OP_STEPS)):
+            frame, _, _, _ = agent.env.step(1)
 
             frame = pre_processing(frame)
             stack_frame = tuple([frame]*agent.skip_frames)
@@ -194,9 +194,6 @@ def run(ID, in_queue, out_queue):
                     dead = True
                     start_life = info['ale.lives']
                 
-                if info['ale.lives'] <= 0:
-                    is_done = True
-
                 reward = np.clip(reward, -1.0, 1.0)
 
                 score += reward
@@ -225,6 +222,8 @@ def run(ID, in_queue, out_queue):
                         UPDATED = True
                         agent.samples.clear()
                 if dead:
+                    if action+1 != 1:
+                        agent.env.step(1) #restart environment
                     dead = False
                 else:
                     initial_state = next_state
