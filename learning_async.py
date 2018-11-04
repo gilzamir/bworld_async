@@ -25,19 +25,6 @@ action_size = 3
 learning_rate = 0.0025
 skip_frames = 4
 
-
-class Block:
-    def __init__(self):
-        self.value = False
-
-    def wait(self, t=0.05):
-        while self.value:
-            time.sleep(0.05)
-        self.value = True
-    
-    def work_done(self):
-        self.value = False
-
 def predict_back(bqin, bqout, graph, model):
     try:
         while True:
