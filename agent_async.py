@@ -32,7 +32,7 @@ def pre_processing(observe):
         resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
     return processed_observe
 
-REFRESH_MODEL_NUM = 1000
+REFRESH_MODEL_NUM = 20
 
 def sample(buffer, size):
     indices = random.sample(range(len(buffer)), size)
@@ -213,7 +213,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                             out_uqueue.put( ([sample[0], sample[1]], sample[3], agent.ID, False) ) 
                         agent.samples.clear()
 
-                if (agent.thread_time > 0) and (agent.thread_time % agent.ASYNC_UPDATE == 0 or dead):
+                if (agent.thread_time > 0) and (agent.thread_time % agent.ASYNC_UPDATE == 0 or dead or reward > 0):
                     out_uqueue.put( (_, _, agent.ID, True) )
                 if dead:
                     dead = False
