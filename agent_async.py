@@ -31,7 +31,7 @@ def pre_processing(observe):
         resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
     return processed_observe
 
-REFRESH_MODEL_NUM = 10
+REFRESH_MODEL_NUM = 1000
 
 def sample(buffer, size):
     indices = random.sample(range(len(buffer)), size)
@@ -62,7 +62,8 @@ class AsyncAgent:
         self.epsilon_min = np.random.normal(0.1, 0.05)
         self.epsilon_decay = np.random.normal(0.9, 0.09)
         self.gamma = np.random.normal(0.9, 0.09)
-        self.batch_size = 32
+        self.batch_size = 1
+        self.ASYNC_UPDATE = 32
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
         self.N_RANDOM_STEPS = 12500
@@ -76,14 +77,16 @@ class AsyncAgent:
             else:
                 self.epsilon = self.epsilon_min
 
-    def act(self, graph, model, state, is_randomic = False):
+    def act(self, qin, qout, state, is_randomic = False):
         action = 0
         p = np.random.rand()
         if is_randomic or p <= self.epsilon:
             self.update_epsilon(is_randomic)
             return np.random.choice(self.contextual_actions)
         else:
-            act_values = model.predict([state, self.mask_actions])
+            qout.put( (state, self.mask_actions, False) )
+            qout.join()
+            act_values = qin.get()
             action = np.argmax(act_values[0])
             self.update_epsilon(is_randomic)
             return action
@@ -99,52 +102,47 @@ class AsyncAgent:
                0 # learning phase in TEST mode
         ]
 
-    def memory_update(self, graph, model, back_model, state, action, reward, next_state, is_done):
-        next_Q_value = back_model.predict([next_state, self.mask_actions])[0]  
-        if is_done:
-            target = reward
-        else:
-            target = reward + self.gamma * np.amax(next_Q_value)
-        targets = np.zeros(1)
-        targets[0] = target
-        #---
-        
-        action_one_hot = get_one_hot([action], self.action_size) 
-        target_one_hot = action_one_hot * targets[:, None]
-        
+    def memory_update(self, qin, qout, state, action, reward, next_state, is_done):
+        try:
+            qout.put( (next_state, self.mask_actions, True) )
+            qout.join()
 
-        sample = self.get_sample(state, action_one_hot, target_one_hot)
+            next_Q_value = qin.get()
 
-        self.samples.append(sample)
+            if is_done:
+                target = reward
+            else:
+                target = reward + self.gamma * np.amax(next_Q_value)
+            targets = np.zeros(1)
+            targets[0] = target
+            #---
+            
+            action_one_hot = get_one_hot([action], self.action_size) 
+            target_one_hot = action_one_hot * targets[:, None]
+            
 
-def run(ID, in_queue, out_queue):
-    import tensorflow as tf
-    import utils
-    from keras.backend.tensorflow_backend import set_session
-    config = tf.ConfigProto()
-    config.gpu_options.per_process_gpu_memory_fraction = 0.15
-    #config.gpu_options.gpu_options.allow_growth = True
-    set_session(tf.Session(config=config))
+            sample = self.get_sample(state, action_one_hot, target_one_hot)
 
+            self.samples.append(sample)
+        except Exception as e:
+            print("error %"%(s))
+        except ValueError as ve:
+            print(ve)
+        except:
+            print("Erro nao esperado em agent.run")
+
+
+def run(ID, qin, qout, out_uqueue, lock):
     agent = AsyncAgent(ID, (84, 84), 3)
     agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/250000)
-    #print(agent.ID)
-    graph = tf.get_default_graph()
-    model, back_model = utils.get_model_pair(graph, agent.state_size, agent.skip_frames, agent.action_size, agent.learning_rate)
+    print(agent.ID)
     MAX_T = 100000000
     T = 0
     while True:
         try:
-            params, back_params = in_queue.get()
-
             if T >= MAX_T:
                 break
 
-            with graph.as_default():
-                #>print(params)
-                model.set_weights(params)
-                back_model.set_weights(back_params)
-            
             if agent.env == None:
                 agent.env =  gym.make('BreakoutDeterministic-v4')
 
@@ -166,23 +164,21 @@ def run(ID, in_queue, out_queue):
 
             agent.reset()
 
-            LOSS = 0
             score, start_life = 0, 5
 
             dead = False
 
             action = 0
             next_state = None
-            step  = 0   
-            update_counter = 0
-            gradient = []
-            #old_w = model.get_weights()
-            UPDATED = False
+            step  = 0
+
             while not is_done:
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
-                    action = agent.act(graph, model, initial_state)
+                    lock.acquire()
+                    action = agent.act(qin, qout, initial_state)
+                    lock.release()
                 else:
-                    action = agent.act(graph, model, initial_state, True)
+                    action = agent.act(qin, qout, initial_state, True)
                 if step > 2000:
                     print(action)
                 frame, reward, is_done, info = agent.env.step(action+1)
@@ -200,28 +196,21 @@ def run(ID, in_queue, out_queue):
                 score += reward
 
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
-                    agent.memory_update(graph, model, back_model, initial_state, action, reward, next_state, dead)
-                    if len(agent.samples) >= agent.batch_size:
-                        avg_loss = 0.0
+                    lock.acquire()
+                    agent.memory_update(qin, qout, initial_state, action, reward, next_state, dead)
+                    lock.release()
+                    if len(agent.samples) >= agent.batch_size: #ASYNC_UPDATE
+                        lock.acquire()
                         samples = random.sample(list(agent.samples), agent.batch_size)
-                        old_w = model.get_weights()
                         for sample in samples:
-                            loss = model.train_on_batch([sample[0], sample[1]], sample[3])
-                            avg_loss += loss
-                                                
-                        if len(gradient)==0:
-                            for nw, ow in list(zip(model.get_weights(), old_w)):
-                                gradient.append(nw-ow)
-                        else:
-                            idx = 0
-                            for nw, ow in list(zip(model.get_weights(), old_w)):
-                                gradient[idx] += nw - ow
-                                idx += 1
-                                                
-                        LOSS += avg_loss/agent.batch_size
-                        update_counter += 1
-                        UPDATED = True
+                            out_uqueue.put( ([sample[0], sample[1]], sample[3], agent.ID, False) ) 
                         agent.samples.clear()
+                        lock.release()
+
+                if (agent.thread_time > 0) and (agent.thread_time % agent.ASYNC_UPDATE == 0 or dead):
+                    lock.acquire()
+                    out_uqueue.put( (_, _, agent.ID, True) )
+                    lock.release()
                 if dead:
                     dead = False
                     agent.env.step(1)
@@ -233,26 +222,17 @@ def run(ID, in_queue, out_queue):
 
                 agent.thread_time += 1
                 step += 1
-
-            if update_counter > 0:
-                LOSS = LOSS/update_counter
-                
-            if update_counter == 0:
-                update_counter = 1
-
-            #print("FIM %d"%(agent.ID))
-
-            #for nw, ow in list(zip(model.get_weights(), old_w)):
-            #    gradient.append(nw-ow)
-
-            out_queue.put( (gradient, UPDATED, score, LOSS, step, agent.epsilon, agent.ID) )
-            in_queue.task_done()
+            print("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
             T += 1
         except Exception as e:
+            print("Erro nao esperado em agent.run")
             print("error %"%(s))
-            pass
-    out_queue.put(None, None, UPDATED, 0.0)
-    in_queue.task_done()
+        except ValueError as ve:
+            print("Erro nao esperado em agent.run")
+            print(ve)
+        except:
+            print("Erro nao esperado em agent.run")
+
 
  
 

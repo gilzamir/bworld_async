@@ -19,12 +19,10 @@ handler.setLevel(logging.DEBUG)
 logger_debug.addHandler(handler)
 logger_debug.propagate = False
 
-
 state_size = (84, 84)
 action_size = 3
 learning_rate = 0.0025
 skip_frames = 4
-
 
 def run_learning(input_queue, output_queue, max_threads):
     try:
@@ -59,6 +57,7 @@ def run_learning(input_queue, output_queue, max_threads):
             updates = 0
             epsilon = [0]*max_threads 
             it = 0 
+            alfa = 1.0/max_threads
             while not input_queue.empty():
                 gradient, updated, score, loss, steps, eps, thread_id = input_queue.get()
                 avg_score += score
@@ -69,7 +68,7 @@ def run_learning(input_queue, output_queue, max_threads):
                     params = list(zip(weights, gradient))
                     idx = 0
                     for p, new_p  in params:
-                        p = p + new_p
+                        p = p + new_p * alfa
                         weights[idx] = p
                         idx += 1
                     model.set_weights(weights)
@@ -79,10 +78,14 @@ def run_learning(input_queue, output_queue, max_threads):
                 avg_steps = avg_steps/it
                 avg_score = avg_score/it
                 if updates > 0:
+                    msg = "TID: %d Global time: %d Avg Steps: %f Avg Score: %f Avg Loss: %f Epsilon: %s"%(thread_id, T, avg_steps, avg_score, avg_loss, epsilon)
                     avg_loss = avg_loss/updates
-                    print("TID: %d, Global time: %d,  Avg Steps: %f, Avg Score: %f, Avg Loss: %f, Epsilon: %s"%(thread_id, T, avg_steps, avg_score, avg_loss, epsilon))
+                    logger_debug.debug(msg)
+                    print(msg)
                 else:
-                    print("TID: %d, Global time: %d, Avg Steps: %f, Avg Score: %f"%(thread_id, T, avg_steps, avg_score))
+                    msg = "TID: %d Global time: %d Avg Steps: %f Avg Score: %f"%(thread_id, T, avg_steps, avg_score)
+                    logger_debug.debug(msg)
+                    print(msg)
             T += 1
     except Exception as e:
         print(e)
