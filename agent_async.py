@@ -21,6 +21,7 @@ from keras.utils.np_utils import to_categorical
 from multiprocessing import Queue, Process, Pipe
 import numpy as np
 import time
+import logging
 
 def get_one_hot(targets, nb_classes):
     return np.eye(nb_classes)[np.array(targets).reshape(-1)]
@@ -66,7 +67,7 @@ class AsyncAgent:
         self.ASYNC_UPDATE = 32
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
-        self.N_RANDOM_STEPS = 1000
+        self.N_RANDOM_STEPS = 12500
         self.NO_OP_STEPS = 30
         self.env = None
 
@@ -133,6 +134,17 @@ class AsyncAgent:
 
 
 def run(ID, qin, qout, bqin, bqout, out_uqueue):
+    logger_debug = logging.getLogger(__name__)
+    logger_debug.setLevel(logging.DEBUG)
+
+    handler = logging.FileHandler('thread_debug_%d.log'%(ID))
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    handler.setLevel(logging.DEBUG)
+    logger_debug.addHandler(handler)
+    logger_debug.propagate = False
+
     agent = AsyncAgent(ID, (84, 84), 3)
     agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/250000)
     print(agent.ID)
@@ -215,6 +227,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                 agent.thread_time += 1
                 step += 1
             print("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
+            logger_debug.debug("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
             T += 1
         except Exception as e:
             print("Erro nao esperado em agent.run")

@@ -74,8 +74,9 @@ def update_model(qin, graph, model, back_model, threads):
             
             with graph.as_default():
                 if not apply_gradient:
-                    old_w = model.get_weights()         
-                    loss += model.train_on_batch(X, Y)
+                    old_w = model.get_weights()   
+                    c_loss = model.train_on_batch(X, Y)
+                    loss += c_loss
                     new_w = model.get_weights()
                     gradient = gradients[TID]
                     if len(gradient) == 0:
@@ -89,6 +90,7 @@ def update_model(qin, graph, model, back_model, threads):
                     if T > 0 and T % N == 0:
                         print("T %d LOSS %f"%(T, loss/N))
                         loss = 0.0
+                    logger_debug.debug("T %d LOSS %f"%(T, c_loss))
                 else:
                     gradient = gradients[TID]
                     if len(gradient) > 0:
@@ -99,7 +101,7 @@ def update_model(qin, graph, model, back_model, threads):
                             idx += 1
                         model.set_weights(weights) 
                         gradient.clear()
-                        print("GRADIENT UPDATING %d >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"%(TID))
+                        #print("GRADIENT UPDATING %d >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"%(TID))
                 if T > 0 and T % agent.REFRESH_MODEL_NUM == 0:
                     back_model.set_weights(model.get_weights())
             T += 1
