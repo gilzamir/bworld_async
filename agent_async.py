@@ -66,7 +66,7 @@ class AsyncAgent:
         self.ASYNC_UPDATE = 32
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
-        self.N_RANDOM_STEPS = 12500
+        self.N_RANDOM_STEPS = 1000
         self.NO_OP_STEPS = 30
         self.env = None
 
@@ -84,7 +84,7 @@ class AsyncAgent:
             self.update_epsilon(is_randomic)
             return np.random.choice(self.contextual_actions)
         else:
-            qout.put( (state, self.mask_actions, False) )
+            qout.put( (state, self.mask_actions) )
             qout.join()
             act_values = qin.get()
             action = np.argmax(act_values[0])
@@ -104,7 +104,7 @@ class AsyncAgent:
 
     def memory_update(self, qin, qout, state, action, reward, next_state, is_done):
         try:
-            qout.put( (next_state, self.mask_actions, True) )
+            qout.put( (next_state, self.mask_actions) )
             qout.join()
 
             next_Q_value = qin.get()
@@ -132,7 +132,7 @@ class AsyncAgent:
             print("Erro nao esperado em agent.run")
 
 
-def run(ID, qin, qout, out_uqueue, lock):
+def run(ID, qin, qout, bqin, bqout, out_uqueue):
     agent = AsyncAgent(ID, (84, 84), 3)
     agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/250000)
     print(agent.ID)
@@ -174,9 +174,7 @@ def run(ID, qin, qout, out_uqueue, lock):
 
             while not is_done:
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
-                    lock.acquire()
                     action = agent.act(qin, qout, initial_state)
-                    lock.release()
                 else:
                     action = agent.act(qin, qout, initial_state, True)
                 if step > 2000:
@@ -196,21 +194,15 @@ def run(ID, qin, qout, out_uqueue, lock):
                 score += reward
 
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
-                    lock.acquire()
-                    agent.memory_update(qin, qout, initial_state, action, reward, next_state, dead)
-                    lock.release()
+                    agent.memory_update(bqin, bqout, initial_state, action, reward, next_state, dead)
                     if len(agent.samples) >= agent.batch_size: #ASYNC_UPDATE
-                        lock.acquire()
                         samples = random.sample(list(agent.samples), agent.batch_size)
                         for sample in samples:
                             out_uqueue.put( ([sample[0], sample[1]], sample[3], agent.ID, False) ) 
                         agent.samples.clear()
-                        lock.release()
 
                 if (agent.thread_time > 0) and (agent.thread_time % agent.ASYNC_UPDATE == 0 or dead):
-                    lock.acquire()
                     out_uqueue.put( (_, _, agent.ID, True) )
-                    lock.release()
                 if dead:
                     dead = False
                     agent.env.step(1)

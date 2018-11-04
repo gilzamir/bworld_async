@@ -30,16 +30,38 @@ class Block:
     def __init__(self):
         self.value = False
 
-def predict(qin, qout, graph, model, back_model):
+    def wait(self, t=0.05):
+        while self.value:
+            time.sleep(0.05)
+        self.value = True
+    
+    def work_done(self):
+        self.value = False
+
+def predict_back(bqin, bqout, graph, model):
     try:
         while True:
-            state, mask, is_back = qin.get()
+            state, mask = bqin.get()
             with graph.as_default():
-                curr = model
-                if is_back:
-                    curr = back_model
-                    result = curr.predict([state, mask])
-                    qout.put(result)
+                result = model.predict([state, mask])
+                bqout.put(result)
+            bqin.task_done()
+    except Exception as e:
+        print("Erro nao esperado em predict_back")
+        print(e)
+    except ValueError as ve:
+        print("Erro nao esperado em predict_back")
+        print(ve)
+    except:
+        print("Erro nao esperado em predict_back")
+
+def predict(qin, qout, graph, model):
+    try:
+        while True:
+            state, mask = qin.get()
+            with graph.as_default():
+                result = model.predict([state, mask])
+                qout.put(result)
             qin.task_done()
     except Exception as e:
         print("Erro nao esperado em predict")
@@ -60,8 +82,9 @@ def update_model(qin, graph, model, back_model, threads):
         for id in threads:
             gradients[id] = []
         while True:
+
             X, Y, TID, apply_gradient = qin.get()
-                
+            
             with graph.as_default():
                 if not apply_gradient:
                     old_w = model.get_weights()         
@@ -102,7 +125,7 @@ def update_model(qin, graph, model, back_model, threads):
     except:
         print("Erro nao esperado em update model")
 
-def server_work(input_queue, output_queue, qupdate, threads):
+def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
     try:
         import tensorflow as tf
         import utils
@@ -118,11 +141,13 @@ def server_work(input_queue, output_queue, qupdate, threads):
         graph = tf.get_default_graph()
         with graph.as_default():
             model, back_model = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate)
-        
-        predict_work = threading.Thread(target=predict, args=(input_queue, output_queue, graph, model, back_model))
+      
+        predict_work = threading.Thread(target=predict, args=(input_queue, output_queue, graph, model))  
+        predict_bwork = threading.Thread(target=predict_back, args=(bqin, bqout, graph, back_model))
         update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, model, back_model, threads))
         predict_work.start()
         update_model_work.start()
+        predict_bwork.start()
     except Exception as e:
         print(e)
     except ValueError as ve:
@@ -134,16 +159,17 @@ def main():
     m = Manager()
     agents = []
     MAX_THREADS = 4
-    lock = Lock()
     pool = Pool()
     input_queue = m.JoinableQueue()
     output_queue = m.Queue()
     input_uqueue = m.Queue()
+    bqin = m.JoinableQueue()
+    bqout = m.Queue()
     threads = list(range(MAX_THREADS))
-    pool.apply_async(server_work, (input_queue, output_queue, input_uqueue, threads))
+    pool.apply_async(server_work, (input_queue, output_queue, input_uqueue, bqin, bqout, threads))
 
     for j in range(MAX_THREADS):
-        pool.apply_async(agent.run, (j, output_queue, input_queue, input_uqueue, lock))
+        pool.apply_async(agent.run, (j, output_queue, input_queue, bqout, bqin, input_uqueue))
     
     pool.close()
     pool.join()
