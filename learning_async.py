@@ -7,6 +7,7 @@ import threading
 import random
 import queue
 import time
+import sys
 
 
 logger_debug = logging.getLogger(__name__)
@@ -40,7 +41,8 @@ def predict_back(bqin, bqout, graph, model):
         print("Erro nao esperado em predict_back")
         print(ve)
     except:
-        print("Erro nao esperado em predict_back")
+        print("Erro nao esperado em predict_back: %s"%(sys.exc_info()[0]))
+        raise
 
 def predict(qin, qout, graph, model):
     try:
@@ -57,7 +59,8 @@ def predict(qin, qout, graph, model):
         print("Erro nao esperado em predict")
         print(ve)
     except:
-        print("Erro nao esperado em predict")
+        print("Erro nao esperado em predict: %s"%(sys.exc_info()[0]))
+        raise
 
 def update_model(qin, graph, model, back_model, threads):
     try:
@@ -100,7 +103,7 @@ def update_model(qin, graph, model, back_model, threads):
                             weights[idx] = p + g
                             idx += 1
                         model.set_weights(weights) 
-                        gradient.clear()
+                        gradients[TID] = []
                         #print("GRADIENT UPDATING %d >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"%(TID))
                 if T > 0 and T % agent.REFRESH_MODEL_NUM == 0:
                     back_model.set_weights(model.get_weights())
@@ -112,7 +115,9 @@ def update_model(qin, graph, model, back_model, threads):
         print("Erro nao esperado em update model")
         print(ve)
     except:
-        print("Erro nao esperado em update model")
+        print("Erro nao esperado em update model: %s"%(sys.exc_info()[0]))
+        raise
+        
 
 def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
     try:
@@ -135,14 +140,19 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
         predict_bwork = threading.Thread(target=predict_back, args=(bqin, bqout, graph, back_model))
         update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, model, back_model, threads))
         predict_work.start()
-        update_model_work.start()
+        update_model_work.start()        
         predict_bwork.start()
+
+        predict_work.join()
+        predict_bwork.join()
+        update_model_work.join()
     except Exception as e:
         print(e)
     except ValueError as ve:
         print(ve)
     except:
-        print("Erro nao esperado em update model") 
+        print("Erro nao esperado em server_work")
+        raise
 
 def main():
     m = Manager()

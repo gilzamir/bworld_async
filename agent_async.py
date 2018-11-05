@@ -42,14 +42,11 @@ def sample(buffer, size):
     return result
 
 class AsyncAgent:
-    def __init__(self, ID, state_size, action_size, learning_rate=0.0025):
+    def __init__(self, ID, state_size, action_size, learning_rate=0.0001):
         self.ID = ID
         self.samples = deque(maxlen=1000)
         self.skip_frames = 4
         self.learning_rate = learning_rate
-        self.initial_decay = 0.0
-        self.decay = 0.0
-        self.rho = 0.9
         if type(state_size) == tuple:
             self.state_size = state_size
         else:
@@ -61,10 +58,11 @@ class AsyncAgent:
         self.thread_time = 0
         self.epsilon = 1.0
         self.epsilon_min = np.random.normal(0.1, 0.05)
-        self.epsilon_decay = np.random.normal(0.9, 0.09)
-        self.gamma = np.random.normal(0.9, 0.09)
+        self.epsilon_decay = None
+        self.epsilon_steps = 1000000
+        self.gamma = 0.99
         self.batch_size = 1
-        self.ASYNC_UPDATE = 32
+        self.ASYNC_UPDATE = 10
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
         self.N_RANDOM_STEPS = 12500
@@ -130,7 +128,8 @@ class AsyncAgent:
         except ValueError as ve:
             print(ve)
         except:
-            print("Erro nao esperado em agent.run")
+            print("Erro nao esperado em agent.memory_update: %s"%(sys.exc_info()[0]))
+            raise
 
 
 def run(ID, qin, qout, bqin, bqout, out_uqueue):
@@ -146,7 +145,8 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
     logger_debug.propagate = False
 
     agent = AsyncAgent(ID, (84, 84), 3)
-    agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/250000)
+    if agent.epsilon_decay == None:
+        agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/agent.epsilon_steps)
     print(agent.ID)
     MAX_T = 100000000
     T = 0
@@ -236,8 +236,8 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
             print("Erro nao esperado em agent.run")
             print(ve)
         except:
-            print("Erro nao esperado em agent.run")
-
+            print("Erro nao esperado em agent.run: %s"%(sys.exc_info()[0]))
+            raise
 
  
 
