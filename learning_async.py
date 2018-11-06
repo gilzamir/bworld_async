@@ -25,12 +25,11 @@ logger_debug.propagate = False
 def predict_back(bqin, bqout, graph, model):
     try:
         while True:
-            state, mask = bqin.get()
+            state, mask, ID = bqin.get()
             with graph.as_default():
                 result = model.predict([state, mask])
                 bqin.task_done()
-                bqout.put(result)
-                bqout.join()
+                bqout.put( (result, ID))
     except Exception as e:
         print("Erro nao esperado em predict_back")
         print(e)
@@ -43,14 +42,12 @@ def predict_back(bqin, bqout, graph, model):
 
 def predict(qin, qout, graph, model):
     try:
-
         while True:
             state, mask, ID = qin.get()
             with graph.as_default():
                 result = model.predict([state, mask])
                 qin.task_done()
                 qout.put( (result, ID) )
-                qout.join()
     except Exception as e:
         print("Erro nao esperado em predict")
         print(e)
@@ -147,10 +144,10 @@ def main():
     MAX_THREADS = cpu_count()
     pool = Pool(MAX_THREADS+1)
     input_queue = m.JoinableQueue()
-    output_queue = m.JoinableQueue()
+    output_queue = m.Queue()
     input_uqueue = m.Queue()
     bqin = m.JoinableQueue()
-    bqout = m.JoinableQueue()
+    bqout = m.Queue()
     threads = list(range(MAX_THREADS))
     pool.apply_async(server_work, (input_queue, output_queue, input_uqueue, bqin, bqout, threads))
 

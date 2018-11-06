@@ -86,14 +86,16 @@ class AsyncAgent:
             self.update_epsilon(is_randomic)
             return np.random.choice(self.contextual_actions)
         else:
-            qout.put( (state, self.mask_actions, self.ID) )
-            act_values, ID = qin.get()
-            qout.join()
+            ID = None
+            while ID != self.ID:
+                qout.put( (state, self.mask_actions, self.ID) )
+                qout.join()
+                act_values, ID = qin.get()
+
             if ID != self.ID:
                 print("DEU UMA MERDA DA PORRA!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             action = np.argmax(act_values[0])
             self.update_epsilon(is_randomic)
-            qin.task_done()
             return action
 
     def reset(self):
@@ -109,11 +111,13 @@ class AsyncAgent:
 
     def memory_update(self, qin, qout, state, action, reward, next_state, is_done):
         try:
-            qout.put( (next_state, self.mask_actions) )
+            ID = None
             
-
-            next_Q_value = qin.get()
-            qout.join()
+            while ID != self.ID:
+                qout.put( (next_state, self.mask_actions, self.ID) )
+                qout.join()
+                next_Q_value, ID = qin.get()
+    
             if is_done:
                 target = reward
             else:
@@ -129,7 +133,6 @@ class AsyncAgent:
             sample = self.get_sample(state, action_one_hot, target_one_hot)
 
             self.samples.append(sample)
-            qin.task_done()
         except Exception as e:
             print("error %"%(s))
         except ValueError as ve:
