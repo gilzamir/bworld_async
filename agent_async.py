@@ -32,7 +32,11 @@ def pre_processing(observe):
         resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
     return processed_observe
 
-REFRESH_MODEL_NUM = 20
+REFRESH_MODEL_NUM = 10000
+LEARNING_RATE = 0.0001
+ACTION_SIZE = 3
+SKIP_FRAMES = 4
+STATE_SIZE = (84, 84)
 
 def sample(buffer, size):
     indices = random.sample(range(len(buffer)), size)
@@ -42,11 +46,11 @@ def sample(buffer, size):
     return result
 
 class AsyncAgent:
-    def __init__(self, ID, state_size, action_size, learning_rate=0.0001):
+    def __init__(self, ID, state_size, action_size):
+        global SKIP_FRAMES
+        self.skip_frames = SKIP_FRAMES
         self.ID = ID
         self.samples = deque(maxlen=1000)
-        self.skip_frames = 4
-        self.learning_rate = learning_rate
         if type(state_size) == tuple:
             self.state_size = state_size
         else:
@@ -54,12 +58,11 @@ class AsyncAgent:
         self.action_size = action_size
         self.mask_actions = np.ones(self.action_size).reshape(1, self.action_size)
         self.thread_id = ID
-        self.thread = None
         self.thread_time = 0
         self.epsilon = 1.0
         self.epsilon_min = np.random.normal(0.1, 0.05)
         self.epsilon_decay = None
-        self.epsilon_steps = 1000000
+        self.epsilon_steps = 250000
         self.gamma = 0.99
         self.batch_size = 1
         self.ASYNC_UPDATE = 10
@@ -83,11 +86,14 @@ class AsyncAgent:
             self.update_epsilon(is_randomic)
             return np.random.choice(self.contextual_actions)
         else:
-            qout.put( (state, self.mask_actions) )
+            qout.put( (state, self.mask_actions, self.ID) )
+            act_values, ID = qin.get()
             qout.join()
-            act_values = qin.get()
+            if ID != self.ID:
+                print("DEU UMA MERDA DA PORRA!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             action = np.argmax(act_values[0])
             self.update_epsilon(is_randomic)
+            qin.task_done()
             return action
 
     def reset(self):
@@ -104,10 +110,10 @@ class AsyncAgent:
     def memory_update(self, qin, qout, state, action, reward, next_state, is_done):
         try:
             qout.put( (next_state, self.mask_actions) )
-            qout.join()
+            
 
             next_Q_value = qin.get()
-
+            qout.join()
             if is_done:
                 target = reward
             else:
@@ -123,6 +129,7 @@ class AsyncAgent:
             sample = self.get_sample(state, action_one_hot, target_one_hot)
 
             self.samples.append(sample)
+            qin.task_done()
         except Exception as e:
             print("error %"%(s))
         except ValueError as ve:
@@ -215,10 +222,12 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
                 if (agent.thread_time > 0) and (agent.thread_time % agent.ASYNC_UPDATE == 0 or dead or reward > 0):
                     out_uqueue.put( (_, _, agent.ID, True) )
+                
                 if dead:
                     dead = False
                     agent.env.step(1)
-                else:
+                
+                if not is_done:
                     initial_state = next_state
                 
                 if agent.RENDER:
@@ -227,7 +236,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                 agent.thread_time += 1
                 step += 1
             print("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
-            logger_debug.debug("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
+           # logger_debug.debug("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
             T += 1
         except Exception as e:
             print("Erro nao esperado em agent.run")

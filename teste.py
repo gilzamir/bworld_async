@@ -1,4 +1,41 @@
+import threading
+import time
 
+class Model:
+  def __init__(self):
+    self.x = 0
+    self.printed = False
+
+def printador(model):
+  old_x = model.x
+  print("Printador: ")
+  print(old_x)
+  model.printed = True
+  while True:
+    while old_x == model.x:
+      time.sleep(1)
+    print("Printador: ")
+    print(model.x)
+    old_x = model.x
+    model.printed = True
+def modificador(model):
+  while True:
+    if model.printed:
+      model.x += 1
+      model.printed = False
+    time.sleep(1)
+
+m = Model()
+t1 = threading.Thread(target=printador, args=(m, ))
+t2 = threading.Thread(target=modificador, args=(m, ))
+t1.start()
+t2.start()
+t1.join()
+t2.join()
+
+
+
+'''
 # Import the gym module
 
 import gym
@@ -38,3 +75,4 @@ while i < 100:
 
     env.render()
   i += 1
+  '''
