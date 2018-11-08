@@ -17,7 +17,7 @@ import gym
 from skimage.color import rgb2gray
 from skimage.transform import resize
 from skimage.transform import rotate
-from keras.utils.np_utils import to_categorical
+#from keras.utils.np_utils import to_categorical
 from multiprocessing import Queue, Process, Pipe
 import numpy as np
 import time
@@ -32,8 +32,8 @@ def pre_processing(observe):
         resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
     return processed_observe
 
-REFRESH_MODEL_NUM = 10000
-LEARNING_RATE = 0.0001
+REFRESH_MODEL_NUM = 40000
+LEARNING_RATE = 0.00025
 ACTION_SIZE = 3
 SKIP_FRAMES = 4
 STATE_SIZE = (84, 84)
@@ -60,16 +60,15 @@ class AsyncAgent:
         self.thread_id = ID
         self.thread_time = 0
         self.epsilon = 1.0
-        self.epsilon_min = np.random.normal(0.1, 0.05)
+        self.epsilon_min = np.random.normal(0.05, 0.05)
         self.epsilon_decay = None
         self.epsilon_steps = 250000
         self.gamma = 0.99
         self.batch_size = 1
-        self.ASYNC_UPDATE = 10
+        self.ASYNC_UPDATE = 32
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
         self.N_RANDOM_STEPS = 12500
-        self.NO_OP_STEPS = 30
         self.env = None
 
     def update_epsilon(self, is_randomic=False):
@@ -87,13 +86,12 @@ class AsyncAgent:
             return np.random.choice(self.contextual_actions)
         else:
             ID = None
-            while ID != self.ID:
-                qout.put( (state, self.mask_actions, self.ID) )
+            TT = None
+            while ID != self.ID or TT != self.thread_time:
+                qout.put( (state, self.mask_actions, self.ID, self.thread_time) )
                 qout.join()
-                act_values, ID = qin.get()
+                act_values, ID, TT = qin.get()
 
-            if ID != self.ID:
-                print("DEU UMA MERDA DA PORRA!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             action = np.argmax(act_values[0])
             self.update_epsilon(is_randomic)
             return action
@@ -103,7 +101,7 @@ class AsyncAgent:
 
     #https://github.com/keras-team/keras/issues/2226
     def get_sample(self, x, mask, label):
-        return [ x, mask, # X
+        return [x, mask, # X
                [1], # sample weights
                label, # y
                0 # learning phase in TEST mode
@@ -111,26 +109,25 @@ class AsyncAgent:
 
     def memory_update(self, qin, qout, state, action, reward, next_state, is_done):
         try:
-            ID = None
+
+            target = reward
+            if not is_done:
+                ID = None
+                TT = None
+                next_Q_value = None
+                while ID != self.ID or TT != self.thread_time:
+                    qout.put( (next_state, self.mask_actions, self.ID, self.thread_time) )
+                    qout.join()
+                    next_Q_value, ID, TT = qin.get()
+                target = reward + self.gamma * np.amax(next_Q_value[0])
             
-            while ID != self.ID:
-                qout.put( (next_state, self.mask_actions, self.ID) )
-                qout.join()
-                next_Q_value, ID = qin.get()
-    
-            if is_done:
-                target = reward
-            else:
-                target = reward + self.gamma * np.amax(next_Q_value)
             targets = np.zeros(1)
             targets[0] = target
             #---
             
             action_one_hot = get_one_hot([action], self.action_size) 
             target_one_hot = action_one_hot * targets[:, None]
-            
-
-            sample = self.get_sample(state, action_one_hot, target_one_hot)
+            sample = self.get_sample(state, action_one_hot[0], target_one_hot[0])
 
             self.samples.append(sample)
         except Exception as e:
@@ -199,8 +196,6 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                     action = agent.act(qin, qout, initial_state)
                 else:
                     action = agent.act(qin, qout, initial_state, True)
-                if step > 2000:
-                    print(action)
                 frame, reward, is_done, info = agent.env.step(action+1)
                 next_frame = pre_processing(frame)
                 next_state = np.reshape([next_frame], (1, 84, 84, 1))
@@ -218,19 +213,18 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
                     agent.memory_update(bqin, bqout, initial_state, action, reward, next_state, dead)
                     if len(agent.samples) >= agent.batch_size: #ASYNC_UPDATE
-                        samples = random.sample(list(agent.samples), agent.batch_size)
+                        samples = agent.samples
                         for sample in samples:
                             out_uqueue.put( ([sample[0], sample[1]], sample[3], agent.ID, False) ) 
                         agent.samples.clear()
 
-                if (agent.thread_time > 0) and (agent.thread_time % agent.ASYNC_UPDATE == 0 or dead or reward > 0):
+                if (agent.thread_time > 0) and ( (agent.thread_time % agent.ASYNC_UPDATE == 0) ):
                     out_uqueue.put( (_, _, agent.ID, True) )
                 
                 if dead:
                     dead = False
                     agent.env.step(1)
-                
-                if not is_done:
+                else:
                     initial_state = next_state
                 
                 if agent.RENDER:
