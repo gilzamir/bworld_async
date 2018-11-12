@@ -91,13 +91,19 @@ def get_model_pair(graph, state_size, skip_frames, action_size, learning_rate):
     with graph.as_default():
         model = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
         model._make_predict_function()
-        model._make_test_function()
+        #model._make_test_function()
         model._make_train_function()
+        
         back_model = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
         back_model._make_predict_function()
-        back_model._make_test_function()
+        #back_model._make_test_function()
         back_model._make_train_function()
-        return (model, back_model)
+        
+        backup_model = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+        backup_model._make_predict_function()
+        #backup_model._make_test_function()
+        backup_model._make_train_function()
+        return (model, back_model, backup_model)
 
 def make_update_function(graph, model):
     with graph.as_default():

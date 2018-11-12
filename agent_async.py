@@ -33,10 +33,14 @@ def pre_processing(observe):
     return processed_observe
 
 REFRESH_MODEL_NUM = 40000
-LEARNING_RATE = 0.00025
+LEARNING_RATE = 0.0025
 ACTION_SIZE = 3
 SKIP_FRAMES = 4
 STATE_SIZE = (84, 84)
+EPSILON_STEPS = [4000000, 4500000, 4000000, 4500000]
+RANDOM_STEPS = [30000, 40000, 50000, 60000]
+GRADIENT_BATCH = 32
+ESPSILON_MINS = [0.1, 0.1, 0.05, 0.001]
 
 def sample(buffer, size):
     indices = random.sample(range(len(buffer)), size)
@@ -60,15 +64,15 @@ class AsyncAgent:
         self.thread_id = ID
         self.thread_time = 0
         self.epsilon = 1.0
-        self.epsilon_min = np.random.normal(0.05, 0.05)
+        self.epsilon_min = ESPSILON_MINS[ID]
         self.epsilon_decay = None
-        self.epsilon_steps = 250000
+        self.epsilon_steps = EPSILON_STEPS[ID]
         self.gamma = 0.99
         self.batch_size = 1
-        self.ASYNC_UPDATE = 32
+        self.ASYNC_UPDATE = 1000
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
-        self.N_RANDOM_STEPS = 12500
+        self.N_RANDOM_STEPS = 50000
         self.env = None
 
     def update_epsilon(self, is_randomic=False):
@@ -207,13 +211,13 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                     start_life = info['ale.lives']
 
                 reward = np.clip(reward, -1.0, 1.0)
-  
+
                 score += reward
 
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
                     agent.memory_update(bqin, bqout, initial_state, action, reward, next_state, dead)
                     if len(agent.samples) >= agent.batch_size: #ASYNC_UPDATE
-                        samples = agent.samples
+                        samples = random.sample(agent.samples, agent.batch_size)
                         for sample in samples:
                             out_uqueue.put( ([sample[0], sample[1]], sample[3], agent.ID, False) ) 
                         agent.samples.clear()

@@ -5,8 +5,9 @@ import logging
 from multiprocessing import Queue, Process,  Manager, Pool, Lock, cpu_count
 import threading
 import random
-import queue
+from collections import deque
 import time
+from keras.models import clone_model
 import sys
 
 
@@ -62,7 +63,7 @@ def predict(qin, qout, graph, model, lock):
         print("Erro nao esperado em predict: %s"%(sys.exc_info()[0]))
         raise
 
-def update_model(qin, graph, model, back_model, threads, lock, lock_back):
+def update_model(qin, graph, model, back_model, backup_model, threads, lock, lock_back):
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
@@ -72,13 +73,12 @@ def update_model(qin, graph, model, back_model, threads, lock, lock_back):
         outputs = {}
         masks = {}
         for id in threads:
-            inputs[id] = []
-            outputs[id] = []
-            masks[id] = []
+            inputs[id] = deque(maxlen=50000)
+            outputs[id] = deque(maxlen=50000)
+            masks[id] = deque(maxlen=50000)
         count_loss = 0
         while True:
             X, Y, TID, apply_gradient = qin.get()
-            
             with graph.as_default():
                 if not apply_gradient:
                     inputs[TID].append(X[0][0])
@@ -89,15 +89,16 @@ def update_model(qin, graph, model, back_model, threads, lock, lock_back):
                     cmask = masks[TID]
                     if len(cinput) > 0:
                         coutput = outputs[TID]
-                        lock_back.acquire()
-                        h = back_model.fit(
-                                [np.array(cinput), np.array(cmask)], np.array(coutput), epochs=1, batch_size=len(cinput), verbose=0)
-                        lock_back.release()
+                        h = backup_model.fit(
+                                [np.array(cinput), np.array(cmask)], np.array(coutput), epochs=1, batch_size=agent.GRADIENT_BATCH, verbose=0)
                         loss +=  h.history['loss'][0]
                         count_loss += 1
                         inputs[TID].clear()
                         outputs[TID].clear()
                         masks[TID].clear()
+                        lock.acquire()
+                        model.set_weights(backup_model.get_weights())
+                        lock.release()
                 if T > 0:
                     if T % N == 0 and count_loss > 0:
                         print("T %d LOSS %f"%(T, loss/count_loss))
@@ -105,9 +106,9 @@ def update_model(qin, graph, model, back_model, threads, lock, lock_back):
                         count_loss = 0
                         #logger_debug.debug("T %d LOSS %f"%(T, c_loss))
                     if T % agent.REFRESH_MODEL_NUM == 0:
-                        lock.acquire()
-                        model.set_weights(back_model.get_weights())
-                        lock.release()
+                        lock_back.acquire()
+                        back_model.set_weights(backup_model.get_weights())
+                        lock_back.release()
             T += 1
     except Exception as e:
         print("Erro nao esperado em update model")
@@ -124,11 +125,11 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
     try:
         import tensorflow as tf
         import utils
-        from keras.backend.tensorflow_backend import set_session
-        config = tf.ConfigProto()
-        config.gpu_options.per_process_gpu_memory_fraction = 0.3
+        #from keras.backend.tensorflow_backend import set_session
+        #config = tf.ConfigProto()
+        #config.gpu_options.per_process_gpu_memory_fraction = 0.3
         #config.gpu_options.gpu_options.allow_growth = True
-        set_session(tf.Session(config=config))
+        #set_session(tf.Session(config=config))
         state_size = agent.STATE_SIZE
         action_size = agent.ACTION_SIZE
         learning_rate = agent.LEARNING_RATE
@@ -139,14 +140,15 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
         lock_back = threading.Lock()
 
         with graph.as_default():
-            model, back_model = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate)
+            model, back_model, backup_model = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate)
             back_model.set_weights(model.get_weights())
-        predict_work = threading.Thread(target=predict, args=(input_queue, output_queue, graph, model, lock))  
-        predict_bwork = threading.Thread(target=predict_back, args=(bqin, bqout, graph, back_model, lock_back))
-        update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, model, back_model, threads, lock, lock_back))
-        predict_work.start()
-        update_model_work.start()        
-        predict_bwork.start()
+            backup_model.set_weights(model.get_weights())
+            predict_work = threading.Thread(target=predict, args=(input_queue, output_queue, graph, model, lock))  
+            predict_bwork = threading.Thread(target=predict_back, args=(bqin, bqout, graph, back_model, lock_back))
+            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, model, back_model, backup_model, threads, lock, lock_back))
+            predict_work.start()
+            update_model_work.start()        
+            predict_bwork.start()
 
         predict_work.join()
         predict_bwork.join()
@@ -162,7 +164,7 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
 def main():
     m = Manager()
     agents = []
-    MAX_THREADS = cpu_count()
+    MAX_THREADS = 4
     pool = Pool(MAX_THREADS+1)
     input_queue = m.JoinableQueue()
     output_queue = m.Queue()
