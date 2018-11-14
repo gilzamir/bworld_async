@@ -1,12 +1,13 @@
+import gym
 import numpy as np
-import agent
+from bagent import DQNAgent as Agent
 from collections import deque
 import logging
-from multiprocessing import Queue, Process,  Manager, Pool
+import threading as td
+from skimage.color import rgb2gray
+from skimage.transform import resize
+from skimage.transform import rotate
 import random
-import queue
-import time
-
 
 logger_debug = logging.getLogger(__name__)
 logger_debug.setLevel(logging.DEBUG)
@@ -17,95 +18,122 @@ formatter = logging.Formatter(
 handler.setFormatter(formatter)
 handler.setLevel(logging.DEBUG)
 logger_debug.addHandler(handler)
-logger_debug.propagate = False
 
-state_size = (84, 84)
-action_size = 3
-learning_rate = 0.0025
-skip_frames = 4
-
-def run_learning(input_queue, output_queue, max_threads):
-    try:
-        import tensorflow as tf
-        import utils
-        from keras.backend.tensorflow_backend import set_session
-        config = tf.ConfigProto()
-        config.gpu_options.per_process_gpu_memory_fraction = 0.3
-        #config.gpu_options.gpu_options.allow_growth = True
-        set_session(tf.Session(config=config))
-        state_size = (84, 84)
-        action_size = 3
-        learning_rate = 0.0025
-        skip_frames = 4
-
-        graph = tf.get_default_graph()
-        model, back_model = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate)
-        utils.front2back(graph, model, back_model)
-        T = 0
-        while True:
-            if T > 0 and T % agent.REFRESH_MODEL_NUM == 0:
-                utils.front2back(graph, model, back_model)
-
-            for _ in range(max_threads):
-                output_queue.put((model.get_weights(), back_model.get_weights()))
-            output_queue.join()
-
-            weights = model.get_weights()
-            avg_loss = 0.0
-            avg_score = 0.0
-            avg_steps = 0.0
-            updates = 0
-            epsilon = [0]*max_threads 
-            it = 0 
-            alfa = 1.0/max_threads
-            while not input_queue.empty():
-                gradient, updated, score, loss, steps, eps, thread_id = input_queue.get()
-                avg_score += score
-                avg_steps += steps
-                if (updated):
-                    avg_loss += loss
-                    epsilon[it] = eps
-                    params = list(zip(weights, gradient))
-                    idx = 0
-                    for p, new_p  in params:
-                        p = p + new_p * alfa
-                        weights[idx] = p
-                        idx += 1
-                    model.set_weights(weights)
-                    updates += 1
-                it += 1
-            if it > 0:
-                avg_steps = avg_steps/it
-                avg_score = avg_score/it
-                if updates > 0:
-                    msg = "TID: %d Global time: %d Avg Steps: %f Avg Score: %f Avg Loss: %f Epsilon: %s"%(thread_id, T, avg_steps, avg_score, avg_loss, epsilon)
-                    avg_loss = avg_loss/updates
-                    logger_debug.debug(msg)
-                    print(msg)
-                else:
-                    msg = "TID: %d Global time: %d Avg Steps: %f Avg Score: %f"%(thread_id, T, avg_steps, avg_score)
-                    logger_debug.debug(msg)
-                    print(msg)
-            T += 1
-    except Exception as e:
-        print(e)
-def main():
-    m = Manager()
-    agents = []
-    MAX_THREADS = 4
+agent = Agent((84, 84), 3)
+agent._build_model()
+agent.front2back()
+agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/1000000)
 
 
-    pool = Pool()
-    input_queue = m.Queue()
-    output_queue = m.JoinableQueue()
-    pool.apply_async(run_learning, (input_queue, output_queue, MAX_THREADS))
+#def pre_processing(observe):
+#    processed_observe = np.uint8(
+#        resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
+#    return processed_observe
 
-    for j in range(MAX_THREADS):
-        pool.apply_async(agent.run, (j, output_queue, input_queue))
-    
-    pool.close()
-    pool.join()
+TRANSFORM_OBS_PROB = 0.05
+
+def pre_processing(observe):
+    if (np.random.rand() <= TRANSFORM_OBS_PROB):
+        if (np.random.rand()<=0.5):
+            observe = rotate(observe, -90)
+        else:
+            observe = rotate(observe, 90)
+    processed_observe = np.uint8(
+        resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
+    return processed_observe
 
 
-if __name__ == "__main__":
-    main()
+LOSS = 0.0
+
+
+def back2front(agent, loss):
+    global LOSS
+    agent.loss += loss
+    agent.count_loss += 1
+    LOSS += loss
+    agent.back2front()
+
+
+RENDER = False
+REFRESH_MODEL_NUM = 10000
+N_RANDOM_STEPS = 50000
+MAX_EPSODES = 100000000
+NO_OP_STEPS = 30
+
+env = gym.make('BreakoutDeterministic-v4')
+
+for i in range(MAX_EPSODES):
+    frame = env.reset()
+    if RENDER:
+        env.render()
+
+    is_done = False
+
+    batch_size = 12
+    batch_size3 = 3*12
+    score, start_life = 0, 5
+    agent.reset()
+    action = 0
+    next_state = None
+
+    # this is one of DeepMind's idea.
+    # just do nothing at the start of episode to avoid sub-optimal
+    for _ in range(random.randint(1, NO_OP_STEPS)):
+        frame, _, _, _ = env.step(1)
+
+    frame = pre_processing(frame)
+    stack_frame = tuple([frame]*agent.skip_frames)
+    initial_state = np.stack(stack_frame, axis=2)
+    initial_state = np.reshape([initial_state], (1, 84, 84, agent.skip_frames))
+
+    dead = False
+    while not is_done:
+        if agent.global_step >= N_RANDOM_STEPS:
+            action = agent.act(initial_state)
+        else:
+            action = agent.act(initial_state, True)
+        frame, reward, is_done, info = env.step(action+1)
+
+        next_frame = pre_processing(frame)
+        next_state = np.reshape([next_frame], (1, 84, 84, 1))
+        next_state = np.append(next_state, initial_state[:, :, :, :3], axis=3)
+        
+        score += reward
+        
+        if start_life > info['ale.lives']:
+            reward = -1
+            dead = True
+            start_life = info['ale.lives']
+
+        reward = np.clip(reward, -1.0, 1.0)
+        
+        logger_debug.debug("REWARD TO ACTION %d is %d" % (action, reward))
+
+        agent.remember(initial_state, action, reward, next_state, dead)
+        logger_debug.debug("MEMORY SIZE (%d, %d, %d)" % (
+            agent.positive_msize(), agent.negative_msize(), agent.neutral_msize()))
+
+        if (agent.global_step >= N_RANDOM_STEPS and (not agent.replay_is_running)):
+            replay_is_running = True
+            LOSS += agent.replay(batch_size)
+            if agent.global_step % REFRESH_MODEL_NUM == 0:
+                agent.back2front()
+
+        if dead:
+            dead = False
+        else:
+            initial_state = next_state
+
+        if RENDER:
+            env.render()
+        if (agent.epoch % 1000 == 0):
+            agent.save("model%d" % (agent.epoch))
+
+    count_loss = agent.step
+    if count_loss == 0:
+        count_loss = 1
+    logger_debug.debug("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS is %d. LOSS IS %f" % (
+        i, score, agent.epsilon, agent.step, agent.global_step, LOSS/count_loss))
+    print("SCORE ON EPISODE %d IS %d. EPSILON IS %f. STEPS IS %d. GSTEPS IS %d. LOSS IS %f" % (
+        i, score, agent.epsilon, agent.step, agent.global_step, LOSS/count_loss))
+    LOSS = 0.0
