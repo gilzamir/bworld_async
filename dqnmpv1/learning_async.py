@@ -109,6 +109,10 @@ def update_model(qin, graph, model, back_model, backup_model, threads, lock, loc
                         lock_back.acquire()
                         back_model.set_weights(backup_model.get_weights())
                         lock_back.release()
+                    
+                    if T % 1000 == 0:
+                        model.save_weights("model_%d.wght"%(T))
+
             T += 1
     except Exception as e:
         print("Erro nao esperado em update model")
@@ -130,6 +134,9 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
         #config.gpu_options.per_process_gpu_memory_fraction = 0.3
         #config.gpu_options.gpu_options.allow_growth = True
         #set_session(tf.Session(config=config))
+
+        START_WITH_WEIGHTS = None #nome do arquivo de pesos jah treinados. Se None, inicia do zero
+
         state_size = agent.STATE_SIZE
         action_size = agent.ACTION_SIZE
         learning_rate = agent.LEARNING_RATE
@@ -141,6 +148,10 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
 
         with graph.as_default():
             model, back_model, backup_model = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate)
+            
+            if START_WITH_WEIGHTS != None:
+                model.load_weights(START_WITH_WEIGHTS)
+            
             back_model.set_weights(model.get_weights())
             backup_model.set_weights(model.get_weights())
             predict_work = threading.Thread(target=predict, args=(input_queue, output_queue, graph, model, lock))  

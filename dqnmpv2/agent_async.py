@@ -6,7 +6,6 @@ import net
 import threading as td
 import numpy as np
 import actions
-from PIL import Image
 from collections import deque
 import io
 import os
@@ -21,7 +20,6 @@ from skimage.transform import rotate
 from multiprocessing import Queue, Process, Pipe
 import numpy as np
 import time
-import logging
 
 def get_one_hot(targets, nb_classes):
     return np.eye(nb_classes)[np.array(targets).reshape(-1)]
@@ -38,7 +36,7 @@ ACTION_SIZE = 3
 SKIP_FRAMES = 4
 STATE_SIZE = (84, 84)
 EPSILON_STEPS = [4000000, 4500000, 4000000, 4500000]
-RANDOM_STEPS = [30000, 40000, 50000, 60000]
+RANDOM_STEPS = [50000, 50000, 50000, 50000]
 GRADIENT_BATCH = 32
 ESPSILON_MINS = [0.1, 0.1, 0.05, 0.001]
 
@@ -69,10 +67,10 @@ class AsyncAgent:
         self.epsilon_steps = EPSILON_STEPS[ID]
         self.gamma = 0.99
         self.batch_size = 1
-        self.ASYNC_UPDATE = 1000
+        self.ASYNC_UPDATE = 32
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
-        self.N_RANDOM_STEPS = 50000
+        self.N_RANDOM_STEPS = RANDOM_STEPS[ID]
         self.env = None
 
     def update_epsilon(self, is_randomic=False):
@@ -139,22 +137,11 @@ class AsyncAgent:
         except ValueError as ve:
             print(ve)
         except:
-            print("Erro nao esperado em agent.memory_update: %s"%(sys.exc_info()[0]))
+            print("Erro nao esperado em agent.memory_update: %s"%(sys.exc_info()))
             raise
 
 
 def run(ID, qin, qout, bqin, bqout, out_uqueue):
-    logger_debug = logging.getLogger(__name__)
-    logger_debug.setLevel(logging.DEBUG)
-
-    handler = logging.FileHandler('thread_debug_%d.log'%(ID))
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    handler.setLevel(logging.DEBUG)
-    logger_debug.addHandler(handler)
-    logger_debug.propagate = False
-
     agent = AsyncAgent(ID, (84, 84), 3)
     if agent.epsilon_decay == None:
         agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/agent.epsilon_steps)
@@ -175,9 +162,6 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
             is_done = False
 
-            # this is one of DeepMind's idea.
-            # just do nothing at the start of episode to avoid sub-optimal
-            #for _ in range(random.randint(1, agent.NO_OP_STEPS)):
             frame, _, _, _ = agent.env.step(1)
 
             frame = pre_processing(frame)
@@ -237,7 +221,6 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                 agent.thread_time += 1
                 step += 1
             print("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
-           # logger_debug.debug("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
             T += 1
         except Exception as e:
             print("Erro nao esperado em agent.run")
@@ -246,7 +229,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
             print("Erro nao esperado em agent.run")
             print(ve)
         except:
-            print("Erro nao esperado em agent.run: %s"%(sys.exc_info()[0]))
+            print("Erro nao esperado em agent.run: %s"%(sys.exc_info()))
             raise
 
  

@@ -72,7 +72,7 @@ class AsyncAgent:
         self.ASYNC_UPDATE = 1000
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
-        self.N_RANDOM_STEPS = 50000
+        self.N_RANDOM_STEPS = RANDOM_STEPS[ID]
         self.env = None
 
     def update_epsilon(self, is_randomic=False):
