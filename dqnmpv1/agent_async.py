@@ -17,11 +17,9 @@ import gym
 from skimage.color import rgb2gray
 from skimage.transform import resize
 from skimage.transform import rotate
-#from keras.utils.np_utils import to_categorical
 from multiprocessing import Queue, Process, Pipe
 import numpy as np
 import time
-import logging
 
 def get_one_hot(targets, nb_classes):
     return np.eye(nb_classes)[np.array(targets).reshape(-1)]
@@ -144,16 +142,6 @@ class AsyncAgent:
 
 
 def run(ID, qin, qout, bqin, bqout, out_uqueue):
-    logger_debug = logging.getLogger(__name__)
-    logger_debug.setLevel(logging.DEBUG)
-
-    handler = logging.FileHandler('thread_debug_%d.log'%(ID))
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    handler.setLevel(logging.DEBUG)
-    logger_debug.addHandler(handler)
-    logger_debug.propagate = False
 
     agent = AsyncAgent(ID, (84, 84), 3)
     if agent.epsilon_decay == None:

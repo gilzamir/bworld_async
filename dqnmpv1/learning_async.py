@@ -110,7 +110,7 @@ def update_model(qin, graph, model, back_model, backup_model, threads, lock, loc
                         back_model.set_weights(backup_model.get_weights())
                         lock_back.release()
                     
-                    if T % 1000 == 0:
+                    if T % 1000000 == 0:
                         model.save_weights("model_%d.wght"%(T))
 
             T += 1
