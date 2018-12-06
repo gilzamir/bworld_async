@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 import random
+import numpy as np
 from net import act, percept
 import net
 import threading as td
 import numpy as np
 import actions
+from PIL import Image
 from collections import deque
 import io
 import os
@@ -15,7 +17,6 @@ import gym
 from skimage.color import rgb2gray
 from skimage.transform import resize
 from skimage.transform import rotate
-#from keras.utils.np_utils import to_categorical
 from multiprocessing import Queue, Process, Pipe
 import numpy as np
 import time
@@ -29,36 +30,14 @@ def pre_processing(observe):
         resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
     return processed_observe
 
-def down_sampling(observe):
-    processed_observe = np.uint8(
-        resize(rgb2gray(observe), (8, 8), mode='constant') * 255)
-    return processed_observe   
-
-def same(a, b):
-    return a[0][0] == b[0][0] and a[1][0] == b[1][0] and a[2][0] == b[2][0] and a[3][0] == b[3][0]
-            and a[4][0] == b[5][0] and a[6][0] and a[7][0]
-            and a[0][1] == b[0][1] and a[1][1] == b[1][1] and a[2][1] == b[2][1] and a[3][1] == b[3][1]
-            and a[4][1] == b[5][1] and a[6][1] and a[7][1]
-            and a[0][2] == b[0][2] and a[1][2] == b[1][2] and a[2][2] == b[2][2] and a[3][2] == b[3][2]
-            and a[4][2] == b[5][2] and a[6][2] and a[7][2]
-            and a[0][3] == b[0][3] and a[1][3] == b[1][3] and a[2][3] == b[2][3] and a[3][3] == b[3][3]
-            and a[4][3] == b[5][3] and a[6][3] and a[7][3]
-            and a[0][4] == b[0][4] and a[1][4] == b[1][4] and a[2][4] == b[2][4] and a[3][4] == b[3][4]
-            and a[4][4] == b[5][4] and a[6][4] and a[7][4]
-            and a[0][5] == b[0][5] and a[1][5] == b[1][5] and a[2][5] == b[2][5] and a[3][5] == b[3][5]
-            and a[4][5] == b[5][5] and a[6][5] and a[7][5]
-            and a[0][6] == b[0][6] and a[1][6] == b[1][6] and a[2][6] == b[2][6] and a[3][6] == b[3][6]
-            and a[4][6] == b[5][6] and a[6][6] and a[7][6]
-            and a[0][7] == b[0][7] and a[1][7] == b[1][7] and a[2][7] == b[2][7] and a[3][7] == b[3][7]
-            and a[4][7] == b[5][7] and a[6][7] and a[7][7]
-
 REFRESH_MODEL_NUM = 40000
 LEARNING_RATE = 0.0025
 ACTION_SIZE = 3
 SKIP_FRAMES = 4
 STATE_SIZE = (84, 84)
 EPSILON_STEPS = [4000000, 4500000, 4000000, 4500000]
-RANDOM_STEPS = [50000, 50000, 50000, 50000]
+RANDOM_STEPS = [30000, 40000, 50000, 60000]
+#RANDOM_STEPS = [10000, 10000, 10000, 10000] #TESTE
 GRADIENT_BATCH = 32
 ESPSILON_MINS = [0.1, 0.1, 0.05, 0.001]
 
@@ -88,8 +67,7 @@ class AsyncAgent:
         self.epsilon_decay = None
         self.epsilon_steps = EPSILON_STEPS[ID]
         self.gamma = 0.99
-        self.batch_size = 1
-        self.ASYNC_UPDATE = 32
+        self.ASYNC_UPDATE = [31, 37, 41, 53]
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
         self.N_RANDOM_STEPS = RANDOM_STEPS[ID]
@@ -112,7 +90,7 @@ class AsyncAgent:
             ID = None
             TT = None
             while ID != self.ID or TT != self.thread_time:
-                qout.put( (state, self.mask_actions, self.ID, self.thread_time) )
+                qout.put( (state, self.ID, self.thread_time, 1) )
                 qout.join()
                 act_values, ID, TT = qin.get()
 
@@ -123,36 +101,24 @@ class AsyncAgent:
     def reset(self):
         pass
 
-    #https://github.com/keras-team/keras/issues/2226
-    def get_sample(self, x, mask, label):
-        return [x, mask, # X
-               [1], # sample weights
-               label, # y
-               0 # learning phase in TEST mode
-        ]
+    '''
+        req_type pode ser 0 (pi e valor), 1 (pi) ou 2 (valor)
+    '''
+    def predict(self, nstate, qin, qout, req_type=0): 
+        ID = None
+        TT = None
+        response = None
+        while ID != self.ID or TT != self.thread_time:
+            qout.put( (nstate, self.ID, self.thread_time, req_type) )
+            qout.join()
+            response, ID, TT = qin.get()
+        return response
 
     def memory_update(self, qin, qout, state, action, reward, next_state, is_done):
         try:
-
-            target = reward
-            if not is_done:
-                ID = None
-                TT = None
-                next_Q_value = None
-                while ID != self.ID or TT != self.thread_time:
-                    qout.put( (next_state, self.mask_actions, self.ID, self.thread_time) )
-                    qout.join()
-                    next_Q_value, ID, TT = qin.get()
-                target = reward + self.gamma * np.amax(next_Q_value[0])
-            
-            targets = np.zeros(1)
-            targets[0] = target
+            pi = self.predict(next_state, qin, qout, 1)
             #---
-            
-            action_one_hot = get_one_hot([action], self.action_size) 
-            target_one_hot = action_one_hot * targets[:, None]
-            sample = self.get_sample(state, action_one_hot[0], target_one_hot[0])
-
+            sample = (state, action, reward, next_state, is_done, pi)
             self.samples.append(sample)
         except ValueError as ve:
             print('Error nao esperado em agent.memory_update: %s'%(ve))
@@ -184,8 +150,10 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
             is_done = False
 
-            for _ in range(random.randint(1,30)):
-                frame, _, _, _ = agent.env.step(1)
+            # this is one of DeepMind's idea.
+            # just do nothing at the start of episode to avoid sub-optimal
+            #for _ in range(random.randint(1, agent.NO_OP_STEPS)):
+            frame, _, _, _ = agent.env.step(1)
 
             frame = pre_processing(frame)
             stack_frame = tuple([frame]*agent.skip_frames)
@@ -204,9 +172,9 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
             while not is_done:
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
-                    action = agent.act(qin, qout, initial_state)
+                    action = agent.act(bqin, bqout, initial_state)
                 else:
-                    action = agent.act(qin, qout, initial_state, True)
+                    action = agent.act(bqin, bqout, initial_state, True)
                 frame, reward, is_done, info = agent.env.step(action+1)
                 next_frame = pre_processing(frame)
                 next_state = np.reshape([next_frame], (1, 84, 84, 1))
@@ -223,15 +191,18 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
                     agent.memory_update(bqin, bqout, initial_state, action, reward, next_state, dead)
-                    if len(agent.samples) >= agent.batch_size: #ASYNC_UPDATE
-                        samples = random.sample(agent.samples, agent.batch_size)
-                        for sample in samples:
-                            out_uqueue.put( ([sample[0], sample[1]], sample[3], agent.ID, False) ) 
+                    if (agent.thread_time > 0) or (agent.thread_time % agent.ASYNC_UPDATE == 0) or dead: #ASYNC_UPDATE
+                        v = agent.predict(next_state, bqin, bqout, 2)
+                        R = 0
+                        if not dead:
+                            R = v[0]
+                        for i in range(len(agent.samples)-1, -1, -1):
+                            sample = agent.samples[i]
+                            R = sample[2] + agent.gamma * R
+                            out_uqueue.put( (sample[0], R, sample[-1], v[0], agent.ID, False) )
                         agent.samples.clear()
+                        out_uqueue.put( (_, _, _, _, agent.ID, True) )
 
-                if (agent.thread_time > 0) and ( (agent.thread_time % agent.ASYNC_UPDATE == 0) ):
-                    out_uqueue.put( (_, _, agent.ID, True) )
-                
                 if dead:
                     dead = False
                     agent.env.step(1)
@@ -244,6 +215,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                 agent.thread_time += 1
                 step += 1
             print("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
+           # logger_debug.debug("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
             T += 1
         except ValueError as ve:
             print("Erro nao esperado em agent.run")
@@ -254,6 +226,3 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
         except:
             print("Erro nao esperado em agent.run: %s"%(sys.exc_info()[0]))
             raise
-
- 
-

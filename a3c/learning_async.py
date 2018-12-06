@@ -22,14 +22,19 @@ handler.setLevel(logging.DEBUG)
 logger_debug.addHandler(handler)
 logger_debug.propagate = False
 
-
-def predict_back(bqin, bqout, graph, model, lock):
+def predict_back(bqin, bqout, graph, pi, V, lock):
     try:
         while True:
-            state, mask, ID, REQ = bqin.get()
+            state, ID, REQ, get_policy = bqin.get()
             with graph.as_default():
                 lock.acquire()
-                result = model.predict([state, mask])
+                result = None
+                if get_policy==1:
+                   result = pi.predict([state])
+                elif get_policy==2:
+                    result = V.predict([state])
+                else:
+                    result = (pi.predict([state]), V.predict([state]))
                 lock.release()
                 bqin.task_done()
                 bqout.put( (result, ID, REQ))
@@ -43,13 +48,19 @@ def predict_back(bqin, bqout, graph, model, lock):
         print("Erro nao esperado em predict_back: %s"%(sys.exc_info()[0]))
         raise
 
-def predict(qin, qout, graph, model, lock):
+def predict(qin, qout, graph, pi, V, lock):
     try:
         while True:
-            state, mask, ID, REQ = qin.get()
+            state, ID, REQ, is_policy = qin.get()
             with graph.as_default():
                 lock.acquire()
-                result = model.predict([state, mask])
+                result = None
+                if is_policy==1:
+                    result = pi.predict([state])
+                elif is_policy==2:
+                    result = V.predict([state])
+                else:
+                    result = (pi.predict([state]), V.predict([state]))
                 lock.release()
                 qin.task_done()
                 qout.put( (result, ID, REQ) )
@@ -63,56 +74,60 @@ def predict(qin, qout, graph, model, lock):
         print("Erro nao esperado em predict: %s"%(sys.exc_info()[0]))
         raise
 
-def update_model(qin, graph, model, back_model, backup_model, threads, lock, lock_back):
+def update_model(qin, graph, pi, pi2, V, V2, threads, lock, lock_back):
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
         loss = 0
         N = 1000
         inputs = {}
-        outputs = {}
-        masks = {}
+        poutputs = {}
+        voutputs = {}
         for id in threads:
             inputs[id] = deque(maxlen=50000)
-            outputs[id] = deque(maxlen=50000)
-            masks[id] = deque(maxlen=50000)
+            poutputs[id] = deque(maxlen=50000)
+            voutputs[id] = deque(maxlen=50000)
         count_loss = 0
         while True:
-            X, Y, TID, apply_gradient = qin.get()
+            state, R, pvalue, svalue, TID, apply_gradient = qin.get()
             with graph.as_default():
                 if not apply_gradient:
-                    inputs[TID].append(X[0][0])
-                    masks[TID].append(X[1])
-                    outputs[TID].append(Y)
+                    inputs[TID].append(state[0])
+                    poutputs[TID].append( (R-svalue[0]) * pvalue[0] )
+                    voutputs[TID].append(R)
                 else:
                     cinput = inputs[TID]
-                    cmask = masks[TID]
                     if len(cinput) > 0:
-                        coutput = outputs[TID]
-                        h = backup_model.fit(
-                                [np.array(cinput), np.array(cmask)], np.array(coutput), epochs=1, batch_size=agent.GRADIENT_BATCH, verbose=0)
-                        loss +=  h.history['loss'][0]
+                        coutput = poutputs[TID]
+                        lock.acquire()
+                        h = pi.fit(
+                                [np.array(cinput)], np.array(coutput), epochs=1, batch_size=agent.GRADIENT_BATCH, verbose=0)
+                        loss +=  0.5 * h.history['loss'][0]
+                        coutput = voutputs[TID]
+
+                        h2 = V.fit(
+                                [np.array(cinput)], np.array(coutput), epochs=1, batch_size=agent.GRADIENT_BATCH, verbose=0)
+                        loss +=  0.5 * h2.history['loss'][0]
+
+                        lock.release()
                         count_loss += 1
                         inputs[TID].clear()
-                        outputs[TID].clear()
-                        masks[TID].clear()
-                        lock.acquire()
-                        model.set_weights(backup_model.get_weights())
-                        lock.release()
+                        poutputs[TID].clear()
+                        voutputs[TID].clear()
                 if T > 0:
                     if T % N == 0 and count_loss > 0:
                         print("T %d LOSS %f"%(T, loss/count_loss))
                         loss = 0.0
                         count_loss = 0
                         #logger_debug.debug("T %d LOSS %f"%(T, c_loss))
-                    if T % agent.REFRESH_MODEL_NUM == 0:
-                        lock_back.acquire()
-                        back_model.set_weights(backup_model.get_weights())
-                        lock_back.release()
-                    
+                    #if T % agent.REFRESH_MODEL_NUM == 0:
+                    lock_back.acquire()
+                    pi2.set_weights(pi.get_weights())
+                    V2.set_weights(V.get_weights())
+                    lock_back.release()
                     if T % 1000000 == 0:
-                        model.save_weights("model_%d.wght"%(T))
-
+                        pi.save_weights("pimodel_%d.wght"%(T))
+                        V.save_weights("vmodel_%d.wght"%(T))
             T += 1
     except ValueError as ve:
         print("Erro nao esperado em update model")
@@ -147,16 +162,17 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
         lock_back = threading.Lock()
 
         with graph.as_default():
-            model, back_model, backup_model = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate)
+            pi, pi2, V, V2 = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate)
             
             if START_WITH_WEIGHTS != None:
-                model.load_weights(START_WITH_WEIGHTS)
-            
-            back_model.set_weights(model.get_weights())
-            backup_model.set_weights(model.get_weights())
-            predict_work = threading.Thread(target=predict, args=(input_queue, output_queue, graph, model, lock))  
-            predict_bwork = threading.Thread(target=predict_back, args=(bqin, bqout, graph, back_model, lock_back))
-            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, model, back_model, backup_model, threads, lock, lock_back))
+                pi.load_weights(START_WITH_WEIGHTS[0])
+                V.load_weights(START_WITH_WEIGHTS[1])
+                
+            pi2.set_weights(pi.get_weights())
+            V2.set_weights(V.get_weights())
+            predict_work = threading.Thread(target=predict, args=(input_queue, output_queue, graph, pi, V, lock))  
+            predict_bwork = threading.Thread(target=predict_back, args=(bqin, bqout, graph, pi2, V2, lock_back))
+            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pi, pi2, V, V2, threads, lock, lock_back))
             predict_work.start()
             update_model_work.start()        
             predict_bwork.start()

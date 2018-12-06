@@ -33,12 +33,12 @@ def predict_back(bqin, bqout, graph, model, lock):
                 lock.release()
                 bqin.task_done()
                 bqout.put( (result, ID, REQ))
-    except Exception as e:
-        print("Erro nao esperado em predict_back")
-        print(e)
     except ValueError as ve:
         print("Erro nao esperado em predict_back")
         print(ve)
+    except Exception as e:
+        print("Erro nao esperado em predict_back")
+        print(e)
     except:
         print("Erro nao esperado em predict_back: %s"%(sys.exc_info()[0]))
         raise
@@ -53,12 +53,12 @@ def predict(qin, qout, graph, model, lock):
                 lock.release()
                 qin.task_done()
                 qout.put( (result, ID, REQ) )
-    except Exception as e:
-        print("Erro nao esperado em predict")
-        print(e)
     except ValueError as ve:
         print("Erro nao esperado em predict")
         print(ve)
+    except Exception as e:
+        print("Erro nao esperado em predict")
+        print(e)
     except:
         print("Erro nao esperado em predict: %s"%(sys.exc_info()[0]))
         raise
@@ -110,16 +110,16 @@ def update_model(qin, graph, model, back_model, backup_model, threads, lock, loc
                         back_model.set_weights(backup_model.get_weights())
                         lock_back.release()
                     
-                    if T % 1000 == 0:
+                    if T % 1000000 == 0:
                         model.save_weights("model_%d.wght"%(T))
 
             T += 1
-    except Exception as e:
-        print("Erro nao esperado em update model")
-        print(e)
     except ValueError as ve:
         print("Erro nao esperado em update model")
         print(ve)
+    except Exception as e:
+        print("Erro nao esperado em update model")
+        print(e)
     except:
         print("Erro nao esperado em update model: %s"%(sys.exc_info()))
         raise
@@ -164,17 +164,16 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
         predict_work.join()
         predict_bwork.join()
         update_model_work.join()
-    except Exception as e:
-        print(e)
     except ValueError as ve:
         print(ve)
+    except Exception as e:
+        print(e)
     except:
         print("Erro nao esperado em server_work")
         raise
 
 def main():
     m = Manager()
-    agents = []
     MAX_THREADS = 4
     pool = Pool(MAX_THREADS+1)
     input_queue = m.JoinableQueue()
