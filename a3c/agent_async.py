@@ -35,10 +35,10 @@ LEARNING_RATE = 0.0025
 ACTION_SIZE = 3
 SKIP_FRAMES = 4
 STATE_SIZE = (84, 84)
-EPSILON_STEPS = [4000000, 4500000, 4000000, 4500000]
-RANDOM_STEPS = [30000, 40000, 50000, 60000]
+EPSILON_STEPS = [800000, 1000000, 900000, 1200000]
+RANDOM_STEPS = [1000, 1000, 1000, 1000]
 #RANDOM_STEPS = [10000, 10000, 10000, 10000] #TESTE
-GRADIENT_BATCH = 32
+GRADIENT_BATCH = [32, 64, 36, 72]
 ESPSILON_MINS = [0.1, 0.1, 0.05, 0.001]
 
 def sample(buffer, size):
@@ -67,7 +67,7 @@ class AsyncAgent:
         self.epsilon_decay = None
         self.epsilon_steps = EPSILON_STEPS[ID]
         self.gamma = 0.99
-        self.ASYNC_UPDATE = [31, 37, 41, 53]
+        self.ASYNC_UPDATE = GRADIENT_BATCH[ID]
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
         self.N_RANDOM_STEPS = RANDOM_STEPS[ID]
@@ -122,8 +122,10 @@ class AsyncAgent:
             self.samples.append(sample)
         except ValueError as ve:
             print('Error nao esperado em agent.memory_update: %s'%(ve))
+            raise
         except Exception as e:
             print("Error nao esperado em agent.memory_update: %s"%(e))
+            raise
         except:
             print("Erro nao esperado em agent.memory_update: %s"%(sys.exc_info()[0]))
             raise
@@ -191,17 +193,18 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
                 if agent.thread_time >= agent.N_RANDOM_STEPS:
                     agent.memory_update(bqin, bqout, initial_state, action, reward, next_state, dead)
-                    if (agent.thread_time > 0) or (agent.thread_time % agent.ASYNC_UPDATE == 0) or dead: #ASYNC_UPDATE
-                        v = agent.predict(next_state, bqin, bqout, 2)
-                        R = 0
+                    if len(agent.samples) >= agent.ASYNC_UPDATE or dead: #ASYNC_UPDATE
+                        v = agent.predict(next_state, bqin, bqout, 2)[0]
+                        R = 0.0
                         if not dead:
                             R = v[0]
                         for i in range(len(agent.samples)-1, -1, -1):
                             sample = agent.samples[i]
                             R = sample[2] + agent.gamma * R
-                            out_uqueue.put( (sample[0], R, sample[-1], v[0], agent.ID, False) )
+                            #state, action, R, pvalue, svalue, TID, apply_gradient = qin.get()
+                            out_uqueue.put( (sample[0], sample[1], R, sample[-1][0], v[0], agent.ID, False) )
                         agent.samples.clear()
-                        out_uqueue.put( (_, _, _, _, agent.ID, True) )
+                        out_uqueue.put( (_, _, _, _, _, agent.ID, True) )
 
                 if dead:
                     dead = False
@@ -220,9 +223,11 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
         except ValueError as ve:
             print("Erro nao esperado em agent.run")
             print(ve)
+            raise
         except Exception as e:
             print("Erro nao esperado em agent.run")
             print("error %s"%(e))
+            raise
         except:
             print("Erro nao esperado em agent.run: %s"%(sys.exc_info()[0]))
             raise

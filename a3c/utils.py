@@ -17,7 +17,7 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     ACTION_SIZE = action_size
     # With the functional API we need to define the inputs.
     frames_input = layers.Input(ATARI_SHAPE, name='frames')
-
+    #actions_input = layers.Input((ACTION_SIZE,), name='action_mask')
     # Assuming that the input frames are still encoded from 0 to 255. Transforming to [0, 1].
     normalized = layers.Lambda(lambda x: x / 255.0, name='normalization')(frames_input)
 
@@ -32,76 +32,46 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     # Flattening the second convolutional layer.
     conv_flattened = layers.core.Flatten()(conv_2)
     # "The final hidden layer is fully-connected and consists of 256 rectifier units."
-    hidden = layers.Dense(256, activation='relu')(conv_flattened)
+    phidden = layers.Dense(256, activation='relu')(conv_flattened)
+    chidden = layers.Dense(256, activation='relu')(conv_flattened)
+
+    rms_opt = RMSprop(lr=learning_rate, rho=0.95, epsilon=0.01)
+
     # "The output layer is a fully-connected linear layer with a single output for each valid action."
-    output = layers.Dense(ACTION_SIZE, activation='softmax')(hidden)
+    output_actions = layers.Dense(ACTION_SIZE, activation='softmax', name='out1')(phidden)
+    output_value = layers.Dense(1, activation='linear', name='out2')(chidden)
+    pmodel = Model(inputs=[frames_input], outputs=[output_actions])
+    vmodel = Model(inputs=[frames_input], outputs=[output_value])
+    
+    action_pl = K.placeholder(shape=(None, action_size))
+    advantages_pl = K.placeholder(shape=(None,))
+    weighted_actions = K.sum(action_pl * pmodel.output, axis=1)
+    eligibility = K.log(weighted_actions + 1e-10) * K.stop_gradient(advantages_pl)
+    entropy = K.sum(pmodel.output * K.log(pmodel.output + 1e-10), axis=1)
+    loss = 0.001 * entropy - K.sum(eligibility)
+    updates = rms_opt.get_updates(pmodel.trainable_weights, [], loss)
+    policy_optimizer = K.function([pmodel.input, action_pl, advantages_pl], [loss], updates=updates)
 
-    model = Model(inputs=[frames_input], outputs=[output])
-   # model.summary()
-    optimizer = RMSprop(lr=learning_rate, rho=0.95, epsilon=0.01)
-    # model.compile(optimizer, loss='mse')
-    # to changed model weights more slowly, uses MSE for low values and MAE(Mean Absolute Error) for large values
-    model.compile(optimizer, loss='categorical_crossentropy')
-    return model
+    discounted_r = K.placeholder(shape=(None,))
+    critic_loss = K.mean(K.square(discounted_r - vmodel.output))
+    critic_updates = rms_opt.get_updates(vmodel.trainable_weights, [], critic_loss)
+    critic_optimizer = K.function([vmodel.input, discounted_r], [critic_loss], updates=critic_updates)
 
-def _build_model2(graph, state_size, skip_frames, learning_rate):
-    __keras_imports()
-    ATARI_SHAPE = (state_size[0], state_size[1], skip_frames)  # input image size to model
-    ACTION_SIZE = 1
-    # With the functional API we need to define the inputs.
-    frames_input = layers.Input(ATARI_SHAPE, name='frames')
-
-    # Assuming that the input frames are still encoded from 0 to 255. Transforming to [0, 1].
-    normalized = layers.Lambda(lambda x: x / 255.0, name='normalization')(frames_input)
-
-    # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
-    conv_1 = layers.convolutional.Conv2D(
-        16, (8, 8), strides=(4, 4), activation='relu'
-    )(normalized)
-    # "The second hidden layer convolves 32 4×4 filters with stride 2, again followed by a rectifier nonlinearity."
-    conv_2 = layers.convolutional.Conv2D(
-        32, (4, 4), strides=(2, 2), activation='relu'
-    )(conv_1)
-    # Flattening the second convolutional layer.
-    conv_flattened = layers.core.Flatten()(conv_2)
-    # "The final hidden layer is fully-connected and consists of 256 rectifier units."
-    hidden = layers.Dense(256, activation='relu')(conv_flattened)
-    # "The output layer is a fully-connected linear layer with a single output for each valid action."
-    output = layers.Dense(ACTION_SIZE)(hidden)
-
-    model = Model(inputs=[frames_input], outputs=[output])
-   # model.summary()
-    optimizer = RMSprop(lr=learning_rate, rho=0.95, epsilon=0.01)
-    # model.compile(optimizer, loss='mse')
-    # to changed model weights more slowly, uses MSE for low values and MAE(Mean Absolute Error) for large values
-    model.compile(optimizer, loss='binary_crossentropy')
-    return model
+    return (pmodel, vmodel, policy_optimizer, critic_optimizer)
 
 def _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate):
     with graph.as_default():
         return _build_model(graph, state_size, skip_frames, action_size, learning_rate)
 
-def _build_model_from_graph2(graph, state_size, skip_frames, learning_rate):
-    with graph.as_default():
-        return _build_model2(graph, state_size, skip_frames, learning_rate)
-
 def get_model_pair(graph, state_size, skip_frames, action_size, learning_rate):
     __keras_imports()
     with graph.as_default():
-        model = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
-        model._make_predict_function()
-        model._make_train_function()
+        pmodel, vmodel, popt, vopt = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+        pmodel._make_predict_function()
+        vmodel._make_predict_function()
 
-        back_model = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
-        back_model._make_predict_function()
-        back_model._make_train_function()
-        
-        model2 = _build_model_from_graph2(graph, state_size, skip_frames, learning_rate)
-        model2._make_predict_function()
-        model2._make_train_function()
+        back_pmodel, back_vmodel, _, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+        back_pmodel._make_predict_function()
+        back_vmodel._make_predict_function()
 
-        back_model2 = _build_model_from_graph2(graph, state_size, skip_frames, learning_rate)
-        back_model2._make_predict_function()
-        back_model2._make_train_function()
-
-        return (model, back_model, model2, back_model2)
+        return (pmodel, vmodel, back_pmodel, back_vmodel, popt, vopt)
