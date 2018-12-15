@@ -21,13 +21,6 @@ from multiprocessing import Queue, Process, Pipe
 import numpy as np
 import time
 
-def loguniform(low=0, high=1, size=None):
-    return np.exp(np.random.uniform(low, high, size))
-
-def get_one_hot(targets, nb_classes):
-    return np.eye(nb_classes)[np.array(targets).reshape(-1)]
-
-
 def pre_processing(observe):
     processed_observe = np.uint8(
         resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
@@ -72,23 +65,15 @@ class AsyncAgent:
         qout.put( (state, self.ID, self.thread_time, 1) )
         qout.join()
         act_values, ID, TT = qin.get()
-        
 
-        """
-
-        Sample an action from an action probability distribution output by
-
-        the policy network.
-
-        """
+        if ID != self.ID or TT != self.thread_time:
+            print('INCONSISTENCE DETECTED ON agent.act: predict response returns inconsistent data!')
 
         # Subtract a tiny value from probabilities in order to avoid
 
         # "ValueError: sum(pvals[:-1]) > 1.0" in numpy.multinomial
         probs = act_values[0]
         probs = probs - np.finfo(np.float32).epsneg
-
-
 
         histogram = np.random.multinomial(1, probs)
 
