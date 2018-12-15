@@ -21,6 +21,9 @@ from multiprocessing import Queue, Process, Pipe
 import numpy as np
 import time
 
+def loguniform(low=0, high=1, size=None):
+    return np.exp(np.random.uniform(low, high, size))
+
 def get_one_hot(targets, nb_classes):
     return np.eye(nb_classes)[np.array(targets).reshape(-1)]
 
@@ -30,16 +33,10 @@ def pre_processing(observe):
         resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
     return processed_observe
 
-REFRESH_MODEL_NUM = 40000
-LEARNING_RATE = 0.0025
+LEARNING_RATE = 0.00001
 ACTION_SIZE = 3
 SKIP_FRAMES = 4
 STATE_SIZE = (84, 84)
-EPSILON_STEPS = [800000, 1000000, 900000, 1200000]
-RANDOM_STEPS = [1000, 1000, 1000, 1000]
-#RANDOM_STEPS = [10000, 10000, 10000, 10000] #TESTE
-GRADIENT_BATCH = [32, 64, 36, 72]
-ESPSILON_MINS = [0.1, 0.1, 0.05, 0.001]
 
 def sample(buffer, size):
     indices = random.sample(range(len(buffer)), size)
@@ -62,41 +59,42 @@ class AsyncAgent:
         self.mask_actions = np.ones(self.action_size).reshape(1, self.action_size)
         self.thread_id = ID
         self.thread_time = 0
-        self.epsilon = 1.0
-        self.epsilon_min = ESPSILON_MINS[ID]
-        self.epsilon_decay = None
-        self.epsilon_steps = EPSILON_STEPS[ID]
         self.gamma = 0.99
-        self.ASYNC_UPDATE = GRADIENT_BATCH[ID]
+        self.ASYNC_UPDATE = 32
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
-        self.N_RANDOM_STEPS = RANDOM_STEPS[ID]
         self.env = None
+        self.NO_OP_STEPS = 10
 
-    def update_epsilon(self, is_randomic=False):
-        if not is_randomic:
-            if self.epsilon > self.epsilon_min:
-                self.epsilon -= self.epsilon_decay
-            else:
-                self.epsilon = self.epsilon_min
+    def act(self, qin, qout, state):
+        ID = None
+        TT = None
+        qout.put( (state, self.ID, self.thread_time, 1) )
+        qout.join()
+        act_values, ID, TT = qin.get()
+        
 
-    def act(self, qin, qout, state, is_randomic = False):
-        action = 0
-        p = np.random.rand()
-        if is_randomic or p <= self.epsilon:
-            self.update_epsilon(is_randomic)
-            return np.random.choice(self.contextual_actions)
-        else:
-            ID = None
-            TT = None
-            while ID != self.ID or TT != self.thread_time:
-                qout.put( (state, self.ID, self.thread_time, 1) )
-                qout.join()
-                act_values, ID, TT = qin.get()
+        """
 
-            action = np.argmax(act_values[0])
-            self.update_epsilon(is_randomic)
-            return action
+        Sample an action from an action probability distribution output by
+
+        the policy network.
+
+        """
+
+        # Subtract a tiny value from probabilities in order to avoid
+
+        # "ValueError: sum(pvals[:-1]) > 1.0" in numpy.multinomial
+        probs = act_values[0]
+        probs = probs - np.finfo(np.float32).epsneg
+
+
+
+        histogram = np.random.multinomial(1, probs)
+
+        action_index = int(np.nonzero(histogram)[0])
+
+        return action_index
 
     def reset(self):
         pass
@@ -108,36 +106,21 @@ class AsyncAgent:
         ID = None
         TT = None
         response = None
-        while ID != self.ID or TT != self.thread_time:
-            qout.put( (nstate, self.ID, self.thread_time, req_type) )
-            qout.join()
-            response, ID, TT = qin.get()
+        qout.put( (nstate, self.ID, self.thread_time, req_type) )
+        qout.join()
+        response, ID, TT = qin.get()
+        if not self.thread_id == TT and not self.ID == ID:
+                print("ERRO : DADOS INCOERENTES EM Agent.predict_____________________________________________________________")
         return response
-
-    def memory_update(self, qin, qout, state, action, reward, next_state, is_done):
-        try:
-            pi = self.predict(next_state, qin, qout, 1)
-            #---
-            sample = (state, action, reward, next_state, is_done, pi)
-            self.samples.append(sample)
-        except ValueError as ve:
-            print('Error nao esperado em agent.memory_update: %s'%(ve))
-            raise
-        except Exception as e:
-            print("Error nao esperado em agent.memory_update: %s"%(e))
-            raise
-        except:
-            print("Erro nao esperado em agent.memory_update: %s"%(sys.exc_info()[0]))
-            raise
-
 
 def run(ID, qin, qout, bqin, bqout, out_uqueue):
     agent = AsyncAgent(ID, (84, 84), 3)
-    if agent.epsilon_decay == None:
-        agent.epsilon_decay = ((agent.epsilon - agent.epsilon_min)/agent.epsilon_steps)
+
     print(agent.ID)
     MAX_T = 100000000
     T = 0
+
+    time.sleep(5 * (ID+1))
     while True:
         try:
             if T >= MAX_T:
@@ -154,8 +137,8 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
             # this is one of DeepMind's idea.
             # just do nothing at the start of episode to avoid sub-optimal
-            #for _ in range(random.randint(1, agent.NO_OP_STEPS)):
-            frame, _, _, _ = agent.env.step(1)
+            for _ in range(random.randint(1, agent.NO_OP_STEPS)):
+                frame, _, _, _ = agent.env.step(1)
 
             frame = pre_processing(frame)
             stack_frame = tuple([frame]*agent.skip_frames)
@@ -171,13 +154,13 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
             action = 0
             next_state = None
             step  = 0
-
+            avg_value = 0.0
+            count_values = 0
             while not is_done:
-                if agent.thread_time >= agent.N_RANDOM_STEPS:
-                    action = agent.act(bqin, bqout, initial_state)
-                else:
-                    action = agent.act(bqin, bqout, initial_state, True)
+                action = agent.act(bqin, bqout, initial_state)
+                
                 frame, reward, is_done, info = agent.env.step(action+1)
+                
                 next_frame = pre_processing(frame)
                 next_state = np.reshape([next_frame], (1, 84, 84, 1))
                 next_state = np.append(next_state, initial_state[:, :, :, :3], axis=3)
@@ -191,33 +174,37 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
                 score += reward
 
-                if agent.thread_time >= agent.N_RANDOM_STEPS:
-                    agent.memory_update(bqin, bqout, initial_state, action, reward, next_state, dead)
-                    if len(agent.samples) >= agent.ASYNC_UPDATE or dead: #ASYNC_UPDATE
-                        v = agent.predict(next_state, bqin, bqout, 2)[0]
-                        R = 0.0
-                        if not dead:
-                            R = v[0]
-                        for i in range(len(agent.samples)-1, -1, -1):
-                            sample = agent.samples[i]
-                            R = sample[2] + agent.gamma * R
-                            #state, action, R, pvalue, svalue, TID, apply_gradient = qin.get()
-                            out_uqueue.put( (sample[0], sample[1], R, sample[-1][0], v[0], agent.ID, False) )
-                        agent.samples.clear()
-                        out_uqueue.put( (_, _, _, _, _, agent.ID, True) )
+                sample = (initial_state, action, reward, next_state)
+                agent.samples.append(sample)
+                
+                if len(agent.samples) >= agent.ASYNC_UPDATE or is_done: #ASYNC_UPDATE
+                    v = agent.predict(initial_state, bqin, bqout, 2)[0]
+                    avg_value += v[0]
+                    count_values += 1
+                    R = 0.0
+                    if not is_done:
+                        R = v[0]
+                    for i in reversed(range(0, len(agent.samples))):
+                        sstate, saction, sreward, _ = agent.samples[i]
+                        R = sreward + agent.gamma * R
+
+                        out_uqueue.put( (sstate, saction, R, v[0], agent.ID, False) )
+                    agent.samples.clear()
+
+                    out_uqueue.put( (_, _, _, _, agent.ID, True) )
 
                 if dead:
                     dead = False
                     agent.env.step(1)
-                else:
-                    initial_state = next_state
+                
+                initial_state = next_state
                 
                 if agent.RENDER:
                     agent.env.render()
 
                 agent.thread_time += 1
                 step += 1
-            print("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
+            print("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d AVG_VALUE %f"%(agent.ID, T, score, step, agent.thread_time, avg_value/count_values))
            # logger_debug.debug("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
             T += 1
         except ValueError as ve:

@@ -24,23 +24,20 @@ logger_debug.addHandler(handler)
 logger_debug.propagate = False
 
 
-def predict_back(bqin, bqout, graph, pmodel, vmodel, lock):
-    mask = np.array([np.ones(agent.ACTION_SIZE)])
+def predict_back(bqin, bqout, graph, tmodels):
     try:
         while True:
             state, ID, REQ, get_policy = bqin.get()
             with graph.as_default():
-                lock.acquire()
                 result = None
                 if get_policy==1:
-                   result = pmodel.predict([state])
+                   result = tmodels[ID][0].predict([state])
                 elif get_policy==2:
-                    result = vmodel.predict([state])
+                    result = tmodels[ID][1].predict([state])
                 else:
-                    result = (pmodel.predict([state]), vmodel.predict([state]))
-                lock.release()
+                    result = (tmodels[ID][0].predict([state]), tmodels[ID][1].predict([state]))
                 bqin.task_done()
-                bqout.put( (result, ID, REQ))
+                bqout.put( (result, ID, REQ) )
     except ValueError as ve:
         print("Erro nao esperado em predict_back")
         print(ve)
@@ -53,42 +50,11 @@ def predict_back(bqin, bqout, graph, pmodel, vmodel, lock):
         print("Erro nao esperado em predict_back: %s"%(sys.exc_info()[0]))
         raise
 
-def predict(qin, qout, graph, pmodel, vmodel, lock):
-    try:
-        while True:
-            state, ID, REQ, is_policy = qin.get()
-            with graph.as_default():
-                lock.acquire()
-                result = None
-                if is_policy==1:
-                    result = pmodel.predict([state])
-                elif is_policy==2:
-                    result = vmodel.predict([state])
-                else:
-                    result = (pmodel.predict([state]), vmodel.predict([state]))
-                lock.release()
-                qin.task_done()
-                qout.put( (result, ID, REQ) )
-                print('------------------------------------------------')
-                print(result)
-    except ValueError as ve:
-        print("Erro nao esperado em predict")
-        print(ve)
-        raise
-    except Exception as e:
-        print("Erro nao esperado em predict")
-        print(e)
-        raise
-    except:
-        print("Erro nao esperado em predict: %s"%(sys.exc_info()[0]))
-        raise
-
-def update_model(qin, graph, pmodel, vmodel, back_pmodel, back_vmodel, popt, vopt, threads, lock, lock_back):
+def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads, lock):
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
-        ploss = 0
-        closs = 0
+        loss = 0
         N = 200
         inputs = {}
         pactions = {}
@@ -101,7 +67,8 @@ def update_model(qin, graph, pmodel, vmodel, back_pmodel, back_vmodel, popt, vop
             discounts_r[id] = deque(maxlen=50000)
         count_loss = 0
         while True:
-            state, action, R, _, svalue, TID, apply_gradient = qin.get()
+            state, action, R, svalue, TID, apply_gradient = qin.get()
+            #lock.acquire()
             with graph.as_default():
                 if not apply_gradient:
                     inputs[TID].append(state[0])
@@ -116,36 +83,29 @@ def update_model(qin, graph, pmodel, vmodel, back_pmodel, back_vmodel, popt, vop
                         advantages_c = advantages[TID]
                         discounts_r_c = discounts_r[TID]
 
-                        lock.acquire()
-                        h = popt([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c)])
-                        #print(h)
-                        ploss +=  np.mean(h)
-                        h = vopt([np.array(inputs_c), np.array(discounts_r_c)])
-                        #print(h)
-                        closs +=  np.mean(h)
-                        lock.release()
                         
+                        h = opt([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c), np.array(discounts_r_c)])
+                        
+                        loss +=  np.mean(h)
+
+                        tmodels[TID][0].set_weights(pmodel.get_weights())
+                        tmodels[TID][1].set_weights(vmodel.get_weights())
+
                         count_loss += 1
                         inputs[TID].clear()
                         pactions[TID].clear()
                         advantages[TID].clear()
-                        discounts_r[TID].clear()
+                        discounts_r[TID].clear()    
                 if T > 0:
                     if T % N == 0 and count_loss > 0:
-                        print("T %d PLOSS %f  CLOSS %f"%(T, ploss/count_loss, closs/count_loss))
-                        ploss = 0.0
-                        closs = 0.0
+                        print("T %d TOTAL LOSS %f"%(T, loss/count_loss))
+                        loss = 0.0
                         count_loss = 0
-                        #logger_debug.debug("T %d LOSS %f"%(T, c_loss))
-                    #if T % agent.REFRESH_MODEL_NUM == 0:
-                    lock_back.acquire()
-                    back_pmodel.set_weights(pmodel.get_weights())
-                    back_vmodel.set_weights(vmodel.get_weights())
-                    lock_back.release()
-                    if T % 1000000 == 0:
+                    if T % 5000000 == 0:
                         pmodel.save_weights("pmodel_%d.wght"%(T))
                         vmodel.save_weights("vmodel_%d.wght"%(T))
             T += 1
+            #lock.release()
     except ValueError as ve:
         print("Erro (ValueError) nao esperado em update model")
         print(ve)
@@ -159,7 +119,7 @@ def update_model(qin, graph, pmodel, vmodel, back_pmodel, back_vmodel, popt, vop
         raise
 
 
-def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
+def server_work(input_queue, output_queue, qupdate, com, threads):
     try:
         import tensorflow as tf
         import utils
@@ -168,7 +128,7 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
         #config.gpu_options.per_process_gpu_memory_fraction = 0.3
         #config.gpu_options.gpu_options.allow_growth = True
         #set_session(tf.Session(config=config))
-
+        num_threads = len(threads)
         START_WITH_PWEIGHTS = None #nome do arquivo de pesos jah treinados. Se None, inicia do zero
         START_WITH_VWEIGHTS = None
 
@@ -179,30 +139,32 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
         graph = tf.get_default_graph()
 
         lock = threading.Lock()
-        lock_back = threading.Lock()
 
         with graph.as_default():
-            pmodel, vmodel, back_pmodel, back_vmodel, popt, vopt = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate)
-            
+            pmodel, vmodel, tmodels, opt = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, num_threads)
+
             if START_WITH_PWEIGHTS != None:
                 pmodel.load_weights(START_WITH_PWEIGHTS)
             
             if START_WITH_VWEIGHTS != None:
                 vmodel.load_weights(START_WITH_VWEIGHTS)
 
-            back_pmodel.set_weights(pmodel.get_weights())
-            back_vmodel.set_weights(vmodel.get_weights())
+            predicts = []
 
-            predict_work = threading.Thread(target=predict, args=(input_queue, output_queue, graph, pmodel, vmodel, lock))  
-            predict_bwork = threading.Thread(target=predict_back, args=(bqin, bqout, graph, back_pmodel, back_vmodel, lock_back))
-            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, vmodel, back_pmodel, back_vmodel, popt, vopt, threads, lock, lock_back))
-            predict_work.start()
-            update_model_work.start()        
-            predict_bwork.start()
+            for i in range(num_threads):
+                tmodels[i][0].set_weights(pmodel.get_weights())
+                tmodels[i][1].set_weights(vmodel.get_weights())
+                t = threading.Thread(target=predict_back, args=(com[i][0], com[i][1], graph, tmodels))
+                predicts.append(t)
+                t.start()
 
-        predict_work.join()
-        predict_bwork.join()
-        update_model_work.join()
+            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, vmodel, tmodels, opt, threads, lock))
+            update_model_work.start()
+
+            for i in range(num_threads):
+                predicts[i].join()
+            
+            update_model_work.join()
     except ValueError as ve:
         print("Erro nao esperado em server_work")
         print(ve)
@@ -217,18 +179,24 @@ def server_work(input_queue, output_queue, qupdate, bqin, bqout, threads):
 
 def main():
     m = Manager()
-    MAX_THREADS = 4
+    MAX_THREADS = 8
+    TIME_TO_CLIENTS = 0.5
     pool = Pool(MAX_THREADS+1)
     input_queue = m.JoinableQueue()
     output_queue = m.Queue()
     input_uqueue = m.Queue()
-    bqin = m.JoinableQueue()
-    bqout = m.Queue()
-    threads = list(range(MAX_THREADS))
-    pool.apply_async(server_work, (input_queue, output_queue, input_uqueue, bqin, bqout, threads))
 
+    com = []
+    for _ in range(MAX_THREADS):
+        bqin = m.JoinableQueue()
+        bqout = m.Queue()
+        com.append((bqin, bqout))
+    
+    threads = list(range(MAX_THREADS))
+    pool.apply_async(server_work, (input_queue, output_queue, input_uqueue, com, threads))
+    time.sleep(TIME_TO_CLIENTS)
     for j in range(MAX_THREADS):
-        pool.apply_async(agent.run, (j, output_queue, input_queue, bqout, bqin, input_uqueue))
+        pool.apply_async(agent.run, (j, output_queue, input_queue, com[j][1], com[j][0], input_uqueue))
 
     pool.close()
     pool.join()

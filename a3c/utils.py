@@ -32,46 +32,48 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     # Flattening the second convolutional layer.
     conv_flattened = layers.core.Flatten()(conv_2)
     # "The final hidden layer is fully-connected and consists of 256 rectifier units."
-    phidden = layers.Dense(256, activation='relu')(conv_flattened)
-    chidden = layers.Dense(256, activation='relu')(conv_flattened)
+    shared = layers.Dense(256, activation='relu')(conv_flattened)
 
-    rms_opt = RMSprop(lr=learning_rate, rho=0.95, epsilon=0.01)
+    rms_opt = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1)
 
     # "The output layer is a fully-connected linear layer with a single output for each valid action."
-    output_actions = layers.Dense(ACTION_SIZE, activation='softmax', name='out1')(phidden)
-    output_value = layers.Dense(1, activation='linear', name='out2')(chidden)
+    output_actions = layers.Dense(ACTION_SIZE, activation='softmax', name='out1')(shared)
+    output_value = layers.Dense(1, activation='linear', name='out2')(shared)
     pmodel = Model(inputs=[frames_input], outputs=[output_actions])
     vmodel = Model(inputs=[frames_input], outputs=[output_value])
     
     action_pl = K.placeholder(shape=(None, action_size))
     advantages_pl = K.placeholder(shape=(None,))
+    discounted_r = K.placeholder(shape=(None,))
+    
     weighted_actions = K.sum(action_pl * pmodel.output, axis=1)
     eligibility = K.log(weighted_actions + 1e-10) * K.stop_gradient(advantages_pl)
     entropy = K.sum(pmodel.output * K.log(pmodel.output + 1e-10), axis=1)
-    loss = 0.001 * entropy - K.sum(eligibility)
-    updates = rms_opt.get_updates(pmodel.trainable_weights, [], loss)
-    policy_optimizer = K.function([pmodel.input, action_pl, advantages_pl], [loss], updates=updates)
+    ploss = 0.01 * entropy - K.sum(eligibility)
+    closs = K.mean(K.square(discounted_r - vmodel.output))
 
-    discounted_r = K.placeholder(shape=(None,))
-    critic_loss = K.mean(K.square(discounted_r - vmodel.output))
-    critic_updates = rms_opt.get_updates(vmodel.trainable_weights, [], critic_loss)
-    critic_optimizer = K.function([vmodel.input, discounted_r], [critic_loss], updates=critic_updates)
+    total_loss = ploss + 0.5 * closs
 
-    return (pmodel, vmodel, policy_optimizer, critic_optimizer)
+    updates = rms_opt.get_updates(pmodel.trainable_weights, [], total_loss)
+    
+    optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [total_loss], updates=updates)
+
+    return (pmodel, vmodel, optimizer)
 
 def _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate):
     with graph.as_default():
         return _build_model(graph, state_size, skip_frames, action_size, learning_rate)
 
-def get_model_pair(graph, state_size, skip_frames, action_size, learning_rate):
+def get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, threads):
     __keras_imports()
     with graph.as_default():
-        pmodel, vmodel, popt, vopt = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+        pmodel, vmodel, opt = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
         pmodel._make_predict_function()
         vmodel._make_predict_function()
-
-        back_pmodel, back_vmodel, _, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
-        back_pmodel._make_predict_function()
-        back_vmodel._make_predict_function()
-
-        return (pmodel, vmodel, back_pmodel, back_vmodel, popt, vopt)
+        tmodels = []
+        for _ in range(threads):
+            back_pmodel, back_vmodel, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+            back_pmodel._make_predict_function()
+            back_vmodel._make_predict_function()
+            tmodels.append( (back_pmodel, back_vmodel) )
+        return (pmodel, vmodel, tmodels, opt)
