@@ -56,7 +56,7 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
 
     updates = rms_opt.get_updates(pmodel.trainable_weights, [], total_loss)
     
-    optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [total_loss], updates=updates)
+    optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [], updates=updates)
 
     return (pmodel, vmodel, optimizer)
 

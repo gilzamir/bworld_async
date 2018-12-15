@@ -41,8 +41,7 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads):
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
-        loss = 0
-        N = 200
+        N = 0
         inputs = {}
         pactions = {}
         advantages = {}
@@ -52,7 +51,6 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads):
             pactions[id] = deque(maxlen=50000)
             advantages[id] = deque(maxlen=50000)
             discounts_r[id] = deque(maxlen=50000)
-        count_loss = 0
         while True:
             state, action, R, svalue, TID, apply_gradient = qin.get()
 
@@ -71,22 +69,21 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads):
                         discounts_r_c = discounts_r[TID]
 
                         
-                        h = opt([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c), np.array(discounts_r_c)])
+                        opt([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c), np.array(discounts_r_c)])
                         
-                        loss +=  np.mean(h)
-
                         tmodels[TID][0].set_weights(pmodel.get_weights())
                         tmodels[TID][1].set_weights(vmodel.get_weights())
 
-                        count_loss += 1
                         inputs[TID].clear()
                         pactions[TID].clear()
                         advantages[TID].clear()
                         discounts_r[TID].clear()
 
                 if T > 0 and T % 1000000 == 0:
-                    pmodel.save_weights("pmodel_%d.wght"%(T))
-                    vmodel.save_weights("vmodel_%d.wght"%(T))
+                    pmodel.save_weights("pmodel_%d.wght"%(N))
+                    vmodel.save_weights("vmodel_%d.wght"%(N))
+                    T = 1
+                    N += 1
             T += 1
 
     except ValueError as ve:
