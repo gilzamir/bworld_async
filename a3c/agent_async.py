@@ -104,6 +104,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
     print(agent.ID)
     MAX_T = 100000000
     T = 0
+    start_time = time.time()
 
     time.sleep(5 * (ID+1))
     while True:
@@ -189,7 +190,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
                 agent.thread_time += 1
                 step += 1
-            print("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d AVG_VALUE %f"%(agent.ID, T, score, step, agent.thread_time, avg_value/count_values))
+            print("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d AVG_VALUE %f ELAPSED TIME %d segs"%(agent.ID, T, score, step, agent.thread_time, avg_value/count_values, time.time()-start_time))
            # logger_debug.debug("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
             T += 1
         except ValueError as ve:
