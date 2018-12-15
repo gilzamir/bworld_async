@@ -80,7 +80,8 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
                         advantages[TID].clear()
                         discounts_r[TID].clear()
 
-                if T > 0 and T % 1000000 == 0:
+                if T > 0 and T % 100000 == 0:
+                    print("SAVING MODELS ON STEP %d........................"%(T))
                     pmodel.save_weights("pmodel_%d.wght"%(N))
                     vmodel.save_weights("vmodel_%d.wght"%(N))
                     T = 1

@@ -32,8 +32,9 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     # Flattening the second convolutional layer.
     conv_flattened = layers.core.Flatten()(conv_2)
     # "The final hidden layer is fully-connected and consists of 256 rectifier units."
-    shared = layers.Dense(256, activation='relu')(conv_flattened)
-
+    x1 = layers.Dense(256, activation='relu')(conv_flattened)
+    shared = layers.Dense(256, activation='relu')(x1)
+    
     rms_opt = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1)
 
     # "The output layer is a fully-connected linear layer with a single output for each valid action."

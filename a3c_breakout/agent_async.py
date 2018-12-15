@@ -133,9 +133,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
             agent.reset()
 
-            score, start_life = 0, 5
-
-            dead = False
+            score = 0
 
             action = 0
             next_state = None
@@ -150,11 +148,6 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                 next_frame = pre_processing(frame)
                 next_state = np.reshape([next_frame], (1, 84, 84, 1))
                 next_state = np.append(next_state, initial_state[:, :, :, :3], axis=3)
-
-                if start_life > info['ale.lives']:
-                    reward = -1
-                    dead = True
-                    start_life = info['ale.lives']
 
                 reward = np.clip(reward, -1.0, 1.0)
 
@@ -179,11 +172,8 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
                     out_uqueue.put( (_, _, _, _, agent.ID, True) )
 
-                if dead:
-                    dead = False
-                    agent.env.step(1)
-                
-                initial_state = next_state
+                if not is_done:
+                    initial_state = next_state
                 
                 if agent.RENDER:
                     agent.env.render()

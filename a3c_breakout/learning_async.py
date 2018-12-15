@@ -80,11 +80,12 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
                         advantages[TID].clear()
                         discounts_r[TID].clear()
 
-                if T > 0 and T % 1000000 == 0:
-                    pmodel.save_weights("pmodel_%d.wght"%(N))
-                    vmodel.save_weights("vmodel_%d.wght"%(N))
-                    T = 1
-                    N += 1
+                #if T > 0 and T % 500000 == 0:
+                    #print("SAVING MODELS ON STEP %d........................"%(T))
+                    #pmodel.save_weights("modelp.wght")
+                    #vmodel.save_weights("modelv.wght")
+                #    T = 1
+                #    N += 1
             T += 1
             time.sleep(0.0)
 
@@ -110,7 +111,6 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
         #config.gpu_options.per_process_gpu_memory_fraction = 0.3
         #config.gpu_options.gpu_options.allow_growth = True
         #set_session(tf.Session(config=config))
-        num_threads = len(threads)
         START_WITH_PWEIGHTS = None #nome do arquivo de pesos jah treinados. Se None, inicia do zero
         START_WITH_VWEIGHTS = None
 
@@ -121,7 +121,7 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
         graph = tf.get_default_graph()
 
         with graph.as_default():
-            pmodel, vmodel, tmodels, opt1, opt2 = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, num_threads)
+            pmodel, vmodel, tmodels, opt1, opt2 = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, len(threads))
 
             if START_WITH_PWEIGHTS != None:
                 pmodel.load_weights(START_WITH_PWEIGHTS)
@@ -131,7 +131,7 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
 
             predicts = []
 
-            for i in range(num_threads):
+            for i in threads:
                 tmodels[i][0].set_weights(pmodel.get_weights())
                 tmodels[i][1].set_weights(vmodel.get_weights())
                 t = threading.Thread(target=predict_back, args=(com[i][0], com[i][1], graph, tmodels))
@@ -141,7 +141,7 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
             update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, vmodel, tmodels, opt1, opt2, threads))
             update_model_work.start()
 
-            for i in range(num_threads):
+            for i in threads:
                 predicts[i].join()
             
             update_model_work.join()
