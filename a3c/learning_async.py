@@ -88,7 +88,7 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads, lock):
                         print("T %d TOTAL LOSS %f"%(T, loss/count_loss))
                         loss = 0.0
                         count_loss = 0
-                    if T % 5000000 == 0:
+                    if T % 1000000 == 0:
                         pmodel.save_weights("pmodel_%d.wght"%(T))
                         vmodel.save_weights("vmodel_%d.wght"%(T))
             T += 1
