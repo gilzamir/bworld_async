@@ -37,7 +37,7 @@ def predict_back(bqin, bqout, graph, tmodels):
         print("Erro nao esperado em predict_back: %s"%(sys.exc_info()[0]))
         raise
 
-def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads):
+def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
@@ -69,8 +69,9 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads):
                         discounts_r_c = discounts_r[TID]
 
                         
-                        opt([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c), np.array(discounts_r_c)])
-                        
+                        opt1([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c)])
+                        opt2([np.array(inputs_c), np.array(discounts_r_c)])
+                    
                         tmodels[TID][0].set_weights(pmodel.get_weights())
                         tmodels[TID][1].set_weights(vmodel.get_weights())
 
@@ -85,6 +86,7 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads):
                     T = 1
                     N += 1
             T += 1
+            time.sleep(0.0)
 
     except ValueError as ve:
         print("Erro (ValueError) nao esperado em update model")
@@ -119,7 +121,7 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
         graph = tf.get_default_graph()
 
         with graph.as_default():
-            pmodel, vmodel, tmodels, opt = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, num_threads)
+            pmodel, vmodel, tmodels, opt1, opt2 = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, num_threads)
 
             if START_WITH_PWEIGHTS != None:
                 pmodel.load_weights(START_WITH_PWEIGHTS)
@@ -136,7 +138,7 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
                 predicts.append(t)
                 t.start()
 
-            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, vmodel, tmodels, opt, threads))
+            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, vmodel, tmodels, opt1, opt2, threads))
             update_model_work.start()
 
             for i in range(num_threads):

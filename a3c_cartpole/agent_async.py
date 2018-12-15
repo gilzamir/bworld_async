@@ -26,10 +26,11 @@ def pre_processing(observe):
         resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
     return processed_observe
 
-LEARNING_RATE = 0.00001
-ACTION_SIZE = 3
-SKIP_FRAMES = 4
-STATE_SIZE = (84, 84)
+_env_test = gym.make('CartPole-v0')
+LEARNING_RATE = 0.005
+ACTION_SIZE = _env_test.action_space.n
+SKIP_FRAMES = 1
+STATE_SIZE = _env_test.observation_space.shape[0]
 
 def sample(buffer, size):
     indices = random.sample(range(len(buffer)), size)
@@ -54,12 +55,11 @@ class AsyncAgent:
         self.thread_time = 0
         self.gamma = 0.99
         self.ASYNC_UPDATE = 32
-        self.contextual_actions = [0, 1, 2]
         self.RENDER = False
         self.env = None
-        self.NO_OP_STEPS = 10
+        self.NO_OP_STEPS = 0
 
-    def act(self, qin, qout, state):
+    def act(self, qin, qout, state):        
         ID = None
         TT = None
         qout.put( (state, self.ID, self.thread_time, 1) )
@@ -69,17 +69,7 @@ class AsyncAgent:
         if ID != self.ID or TT != self.thread_time:
             print('INCONSISTENCE DETECTED ON agent.act: predict response returns inconsistent data!')
 
-        # Subtract a tiny value from probabilities in order to avoid
-
-        # "ValueError: sum(pvals[:-1]) > 1.0" in numpy.multinomial
-        probs = act_values[0]
-        probs = probs - np.finfo(np.float32).epsneg
-
-        histogram = np.random.multinomial(1, probs)
-
-        action_index = int(np.nonzero(histogram)[0])
-
-        return action_index
+        return np.random.choice(np.arange(ACTION_SIZE), 1, p=act_values[0])[0]
 
     def reset(self):
         pass
@@ -99,44 +89,32 @@ class AsyncAgent:
         return response
 
 def run(ID, qin, qout, bqin, bqout, out_uqueue):
-    agent = AsyncAgent(ID, (84, 84), 3)
+    agent = AsyncAgent(ID, STATE_SIZE, ACTION_SIZE)
 
     print(agent.ID)
-    MAX_T = 100000000
+    MAX_T = 1000
     T = 0
     start_time = time.time()
 
-    time.sleep(5 * (ID+1))
+    time.sleep(5 * (ID))
     while True:
         try:
             if T >= MAX_T:
                 break
 
             if agent.env == None:
-                agent.env =  gym.make('BreakoutDeterministic-v4')
+                agent.env =  gym.make('CartPole-v1')
 
-            frame = agent.env.reset()
+            obs = agent.env.reset()
             if agent.RENDER:
                 agent.env.render()
 
             is_done = False
 
-            # this is one of DeepMind's idea.
-            # just do nothing at the start of episode to avoid sub-optimal
-            for _ in range(random.randint(1, agent.NO_OP_STEPS)):
-                frame, _, _, _ = agent.env.step(1)
-
-            frame = pre_processing(frame)
-            stack_frame = tuple([frame]*agent.skip_frames)
-            initial_state = np.stack(stack_frame, axis=2)
-            initial_state = np.reshape([initial_state], (1, 84, 84, agent.skip_frames))
-
+            initial_state = obs
+            initial_state = np.reshape([initial_state], (1, STATE_SIZE))
             agent.reset()
-
-            score, start_life = 0, 5
-
-            dead = False
-
+            score = 0
             action = 0
             next_state = None
             step  = 0
@@ -145,26 +123,16 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
             while not is_done:
                 action = agent.act(bqin, bqout, initial_state)
                 
-                frame, reward, is_done, info = agent.env.step(action+1)
+                obs, reward, is_done, _ = agent.env.step(action)
+                next_state = np.reshape([obs], (1, STATE_SIZE))
                 
-                next_frame = pre_processing(frame)
-                next_state = np.reshape([next_frame], (1, 84, 84, 1))
-                next_state = np.append(next_state, initial_state[:, :, :, :3], axis=3)
-
-                if start_life > info['ale.lives']:
-                    reward = -1
-                    dead = True
-                    start_life = info['ale.lives']
-
-                reward = np.clip(reward, -1.0, 1.0)
-
                 score += reward
-
+                
                 sample = (initial_state, action, reward, next_state)
                 agent.samples.append(sample)
                 
                 if len(agent.samples) >= agent.ASYNC_UPDATE or is_done: #ASYNC_UPDATE
-                    v = agent.predict(initial_state, bqin, bqout, 2)[0]
+                    v = agent.predict(next_state, bqin, bqout, 2)[0]
                     avg_value += v[0]
                     count_values += 1
                     R = 0.0
@@ -178,10 +146,6 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                     agent.samples.clear()
 
                     out_uqueue.put( (_, _, _, _, agent.ID, True) )
-
-                if dead:
-                    dead = False
-                    agent.env.step(1)
                 
                 initial_state = next_state
                 

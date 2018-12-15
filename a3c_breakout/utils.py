@@ -49,16 +49,15 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     weighted_actions = K.sum(action_pl * pmodel.output, axis=1)
     eligibility = K.log(weighted_actions + 1e-10) * K.stop_gradient(advantages_pl)
     entropy = K.sum(pmodel.output * K.log(pmodel.output + 1e-10), axis=1)
-    ploss = 0.01 * entropy - K.sum(eligibility)
+    ploss = 0.001 * entropy - K.sum(eligibility)
+    updates = rms_opt.get_updates(pmodel.trainable_weights, [], ploss)
+    optimizer = K.function([pmodel.input, action_pl, advantages_pl], [], updates=updates)
+
     closs = K.mean(K.square(discounted_r - vmodel.output))
+    updates2 = rms_opt.get_updates(vmodel.trainable_weights, [], closs)
+    optimizer2 = K.function([vmodel.input, discounted_r], [], updates=updates2)
 
-    total_loss = ploss + 0.5 * closs
-
-    updates = rms_opt.get_updates(pmodel.trainable_weights, [], total_loss)
-    
-    optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [], updates=updates)
-
-    return (pmodel, vmodel, optimizer)
+    return (pmodel, vmodel, optimizer, optimizer2)
 
 def _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate):
     with graph.as_default():
@@ -67,13 +66,14 @@ def _build_model_from_graph(graph, state_size, skip_frames, action_size, learnin
 def get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, threads):
     __keras_imports()
     with graph.as_default():
-        pmodel, vmodel, opt = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+        pmodel, vmodel, opt1, opt2 = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
         pmodel._make_predict_function()
         vmodel._make_predict_function()
         tmodels = []
         for _ in range(threads):
-            back_pmodel, back_vmodel, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+            back_pmodel, back_vmodel, _, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
             back_pmodel._make_predict_function()
             back_vmodel._make_predict_function()
             tmodels.append( (back_pmodel, back_vmodel) )
-        return (pmodel, vmodel, tmodels, opt)
+        return (pmodel, vmodel, tmodels, opt1, opt2)
+
