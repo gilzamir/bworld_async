@@ -85,7 +85,6 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads, lock):
                         discounts_r[TID].clear()    
                 if T > 0:
                     if T % N == 0 and count_loss > 0:
-                        print("T %d TOTAL LOSS %f"%(T, loss/count_loss))
                         loss = 0.0
                         count_loss = 0
                     if T % 1000000 == 0:
