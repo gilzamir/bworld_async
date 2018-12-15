@@ -37,7 +37,7 @@ def predict_back(bqin, bqout, graph, tmodels):
         print("Erro nao esperado em predict_back: %s"%(sys.exc_info()[0]))
         raise
 
-def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads, lock):
+def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads):
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
@@ -55,7 +55,7 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads, lock):
         count_loss = 0
         while True:
             state, action, R, svalue, TID, apply_gradient = qin.get()
-            #lock.acquire()
+
             with graph.as_default():
                 if not apply_gradient:
                     inputs[TID].append(state[0])
@@ -82,16 +82,13 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt, threads, lock):
                         inputs[TID].clear()
                         pactions[TID].clear()
                         advantages[TID].clear()
-                        discounts_r[TID].clear()    
-                if T > 0:
-                    if T % N == 0 and count_loss > 0:
-                        loss = 0.0
-                        count_loss = 0
-                    if T % 1000000 == 0:
-                        pmodel.save_weights("pmodel_%d.wght"%(T))
-                        vmodel.save_weights("vmodel_%d.wght"%(T))
+                        discounts_r[TID].clear()
+
+                if T > 0 and T % 1000000 == 0:
+                    pmodel.save_weights("pmodel_%d.wght"%(T))
+                    vmodel.save_weights("vmodel_%d.wght"%(T))
             T += 1
-            #lock.release()
+
     except ValueError as ve:
         print("Erro (ValueError) nao esperado em update model")
         print(ve)
@@ -124,8 +121,6 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
         skip_frames = agent.SKIP_FRAMES
         graph = tf.get_default_graph()
 
-        lock = threading.Lock()
-
         with graph.as_default():
             pmodel, vmodel, tmodels, opt = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, num_threads)
 
@@ -144,7 +139,7 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
                 predicts.append(t)
                 t.start()
 
-            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, vmodel, tmodels, opt, threads, lock))
+            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, vmodel, tmodels, opt, threads))
             update_model_work.start()
 
             for i in range(num_threads):
