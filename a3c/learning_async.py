@@ -1,7 +1,6 @@
 import numpy as np
 import agent_async as agent
 from collections import deque
-import logging
 from multiprocessing import Queue, Process,  Manager, Pool, Lock, cpu_count
 import threading
 import random
@@ -10,18 +9,6 @@ import time
 from keras.models import clone_model
 import sys
 from keras.utils import to_categorical
-
-
-logger_debug = logging.getLogger(__name__)
-logger_debug.setLevel(logging.DEBUG)
-
-handler = logging.FileHandler('train_debug.log')
-formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-handler.setLevel(logging.DEBUG)
-logger_debug.addHandler(handler)
-logger_debug.propagate = False
 
 
 def predict_back(bqin, bqout, graph, tmodels):
