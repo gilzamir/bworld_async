@@ -78,7 +78,7 @@ def update_model(qin, graph, pmodel, tmodels, threads):
                     for state, action, R, svalue, pi in data:
                         n += 1
                         caction = to_categorical(action, agent.ACTION_SIZE)
-                        caction[action] = pi[action]
+                        caction[action] = 1.0
                         adv = R - svalue
                         memory[TID].append( (state, adv, caction, R) )
                     if n >= 0:
