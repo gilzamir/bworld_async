@@ -31,7 +31,7 @@ ACTION_SIZE = 3
 SKIP_FRAMES = 4
 STATE_SIZE = (84, 84)
 FORWARD_STEPS = 8
-BATCH_SIZE = 32
+#BATCH_SIZE = 32
 
 class AsyncAgent:
     def __init__(self, ID, state_size, action_size):
@@ -151,7 +151,6 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
   
                 sample = (initial_state, action, reward, next_state)
                 samples.append(sample)
-
                 if len(samples) >= agent.ASYNC_UPDATE or is_done: #ASYNC_UPDATE
                     v = agent.predict(next_state, bqin, bqout, 2)[0]
                     avg_value += v[0]
@@ -165,8 +164,13 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                         sstate, saction, sreward, _ = samples[i]
                         R = sreward + agent.gamma * R
                         package.append( (sstate, saction, R, v[0]) )
+                    
+                    while out_uqueue.full():
+                        #print('THREAD ID %d WAITING ----------' %(agent.ID))
+                        time.sleep(0.01)
                     out_uqueue.put( (package, agent.ID) )
                     del samples
+
                     samples = []
 
                 if not is_done:

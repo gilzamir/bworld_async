@@ -43,32 +43,40 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
         N = 0
-        memory = []
+        memory = {}
         num_threads = len(threads)
+
+        for t in range(num_threads):
+            memory[t] = []
+
         with graph.as_default():
             while True:
                 data, TID = qin.get()
+                n = 0
                 for state, action, R, svalue in data:
-                    memory.append( (state[0], to_categorical(action, agent.ACTION_SIZE), R-svalue, R) )
-                n = len(memory)
-                if n >= agent.BATCH_SIZE:
+                    n += 1
+                    memory[TID].append( (state[0], to_categorical(action, agent.ACTION_SIZE), R-svalue, R) )
+                if n >= 0:
                     inputs_c = []
                     pactions_c = []
                     advantages_c = []
                     discounts_r_c = []
-                    for  sstate, saction, sadv, sdisc in memory:
+                    c = 0
+                    while c < n:
+                        sstate, saction, sadv, sdisc = memory[TID][c]
                         inputs_c.append(sstate)
                         pactions_c.append(saction)
                         advantages_c.append(sadv)
                         discounts_r_c.append(sdisc)
-                    del memory
-                    memory = []
+                        c += 1
+
                     opt1([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c)])
                     opt2([np.array(inputs_c), np.array(discounts_r_c)])
-
+                    
                     tmodels[TID][0].set_weights(pmodel.get_weights())
                     tmodels[TID][1].set_weights(vmodel.get_weights())
-
+                    memory[TID] = []
+ 
                 if T > 0 and T % 500000 == 0:
                     print("SAVING MODELS ON STEP %d........................"%(T))
                     pmodel.save_weights("modelp.wght")
@@ -147,18 +155,19 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
         raise
 
 def main():
+    QUEUE_BUFFER_SIZE = 10
     m = Manager()
     MAX_THREADS = 4
     TIME_TO_CLIENTS = 0.5
     pool = Pool(MAX_THREADS+1)
-    input_queue = m.JoinableQueue()
-    output_queue = m.Queue(maxsize=5000)
-    input_uqueue = m.Queue(maxsize=5000)
+    input_queue = m.JoinableQueue(maxsize=QUEUE_BUFFER_SIZE)
+    output_queue = m.Queue(maxsize=QUEUE_BUFFER_SIZE)
+    input_uqueue = m.Queue(maxsize=QUEUE_BUFFER_SIZE)
 
     com = []
     for _ in range(MAX_THREADS):
-        bqin = m.JoinableQueue(maxsize=5000)
-        bqout = m.Queue(maxsize=5000)
+        bqin = m.JoinableQueue(maxsize=QUEUE_BUFFER_SIZE)
+        bqout = m.Queue(maxsize=QUEUE_BUFFER_SIZE)
         com.append((bqin, bqout))
     
     threads = list(range(MAX_THREADS))
