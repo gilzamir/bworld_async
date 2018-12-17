@@ -168,13 +168,15 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                     while out_uqueue.full():
                         #print('THREAD ID %d WAITING ----------' %(agent.ID))
                         time.sleep(0.01)
-                    out_uqueue.put( (package, agent.ID) )
+                    out_uqueue.put( (package, agent.ID, False) )
                     del samples
 
                     samples = []
 
                 if not is_done:
                     initial_state = next_state
+                else:
+                    out_uqueue.put( (None, agent.ID, True) )
                 
                 if agent.RENDER:
                     agent.env.render()

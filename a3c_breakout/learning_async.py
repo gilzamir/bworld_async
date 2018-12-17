@@ -51,39 +51,41 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
 
         with graph.as_default():
             while True:
-                data, TID = qin.get()
-                n = 0
-                for state, action, R, svalue in data:
-                    n += 1
-                    memory[TID].append( (state[0], to_categorical(action, agent.ACTION_SIZE), R-svalue, R) )
-                if n >= 0:
-                    inputs_c = []
-                    pactions_c = []
-                    advantages_c = []
-                    discounts_r_c = []
-                    c = 0
-                    while c < n:
-                        sstate, saction, sadv, sdisc = memory[TID][c]
-                        inputs_c.append(sstate)
-                        pactions_c.append(saction)
-                        advantages_c.append(sadv)
-                        discounts_r_c.append(sdisc)
-                        c += 1
-
-                    opt1([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c)])
-                    opt2([np.array(inputs_c), np.array(discounts_r_c)])
-                    
+                data, TID, sync_net = qin.get()
+                if sync_net:
                     tmodels[TID][0].set_weights(pmodel.get_weights())
                     tmodels[TID][1].set_weights(vmodel.get_weights())
-                    memory[TID] = []
+                    if T > 0 and T % 500000 == 0:
+                        print("SAVING MODELS ON STEP %d........................"%(T))
+                        pmodel.save_weights("modelp.wght")
+                        vmodel.save_weights("modelv.wght")
+                        T = 1
+                        N += 1
+                    T += 1
+                else:
+                    n = 0
+                    for state, action, R, svalue in data:
+                        n += 1
+                        memory[TID].append( (state[0], to_categorical(action, agent.ACTION_SIZE), R-svalue, R) )
+                    if n >= 0:
+                        inputs_c = []
+                        pactions_c = []
+                        advantages_c = []
+                        discounts_r_c = []
+                        c = 0
+                        while c < n:
+                            sstate, saction, sadv, sdisc = memory[TID][c]
+                            inputs_c.append(sstate)
+                            pactions_c.append(saction)
+                            advantages_c.append(sadv)
+                            discounts_r_c.append(sdisc)
+                            c += 1
+
+                        opt1([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c)])
+                        opt2([np.array(inputs_c), np.array(discounts_r_c)])
+                        
+                        memory[TID] = []
  
-                if T > 0 and T % 500000 == 0:
-                    print("SAVING MODELS ON STEP %d........................"%(T))
-                    pmodel.save_weights("modelp.wght")
-                    vmodel.save_weights("modelv.wght")
-                    T = 1
-                    N += 1
-                T += 1
 
     except ValueError as ve:
         print("Erro (ValueError) nao esperado em update model")
