@@ -66,11 +66,11 @@ class AsyncAgent:
         # Subtract a tiny value from probabilities in order to avoid
 
         # "ValueError: sum(pvals[:-1]) > 1.0" in numpy.multinomial
-        probs = act_values[0]
+        probs = act_values
         probs = probs - np.finfo(np.float32).epsneg
         histogram = np.random.multinomial(1, probs)
         action_index = int(np.nonzero(histogram)[0])
-        return action_index
+        return action_index, probs
 
     def reset(self):
         pass
@@ -131,14 +131,13 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
             action = 0
             next_state = None
             step  = 0
-            dead = False
             avg_value = 0.0
             count_values = 0
             samples = []
+            out_uqueue.put( (None, agent.ID, True) )
             while not is_done and step <  MAX_STEPS:
-                action = agent.act(bqin, bqout, initial_state)
-                
-                frame, reward, is_done, info = agent.env.step(action+1)
+                action, probs = agent.act(bqin, bqout, initial_state)
+                frame, reward, is_done, _ = agent.env.step(action+1)
 
                 next_frame = pre_processing(frame)
                 next_state = np.reshape([next_frame], (1, 84, 84, 1))
@@ -149,21 +148,24 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                 reward = np.clip(reward, -1.0, 1.0)
 
   
-                sample = (initial_state, action, reward, next_state)
+                sample = (initial_state, action, reward, next_state, probs)
                 samples.append(sample)
+
                 if len(samples) >= agent.ASYNC_UPDATE or is_done: #ASYNC_UPDATE
                     v = agent.predict(next_state, bqin, bqout, 2)[0]
-                    avg_value += v[0]
+    
+                    avg_value += v
                     count_values += 1
                     R = 0.0
                     if not is_done:
-                        R = v[0]
+                        R = v
                     
                     package = []
+
                     for i in reversed(range(0, len(samples))):
-                        sstate, saction, sreward, _ = samples[i]
+                        sstate, saction, sreward, _, probs = samples[i]
                         R = sreward + agent.gamma * R
-                        package.append( (sstate, saction, R, v[0]) )
+                        package.append( (sstate, saction, R, v, probs) )
                     
                     while out_uqueue.full():
                         #print('THREAD ID %d WAITING ----------' %(agent.ID))

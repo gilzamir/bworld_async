@@ -11,6 +11,15 @@ def __keras_imports():
     import keras
     import tensorflow
 
+def logloss(y_true, y_pred):     #policy loss
+    __keras_imports()
+    return -K.sum( K.log(y_true*y_pred + (1-y_true)*(1-y_pred) + 1e-5), axis=-1)
+
+#loss function for critic output
+def sumofsquares(y_true, y_pred):        #critic loss
+    __keras_imports()
+    return K.sum(K.square(y_pred - y_true), axis=-1)
+
 def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     __keras_imports()
     ATARI_SHAPE = (state_size[0], state_size[1], skip_frames)  # input image size to model
@@ -34,31 +43,16 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     # "The final hidden layer is fully-connected and consists of 256 rectifier units."
     x1 = layers.Dense(256, activation='relu')(conv_flattened)
     shared = layers.Dense(256, activation='relu')(x1)
-    
-    rms_opt = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1)
-
     # "The output layer is a fully-connected linear layer with a single output for each valid action."
     output_actions = layers.Dense(ACTION_SIZE, activation='softmax', name='out1')(shared)
     output_value = layers.Dense(1, activation='linear', name='out2')(shared)
-    pmodel = Model(inputs=[frames_input], outputs=[output_actions])
-    vmodel = Model(inputs=[frames_input], outputs=[output_value])
+    model = Model(inputs=[frames_input], outputs=[output_actions, output_value])
     
-    action_pl = K.placeholder(shape=(None, action_size))
-    advantages_pl = K.placeholder(shape=(None,))
-    discounted_r = K.placeholder(shape=(None,))
-    
-    weighted_actions = K.sum(action_pl * pmodel.output, axis=1)
-    eligibility = K.log(weighted_actions + 1e-10) * K.stop_gradient(advantages_pl)
-    entropy = K.sum(pmodel.output * K.log(pmodel.output + 1e-10), axis=1)
-    ploss = 0.001 * entropy - K.sum(eligibility)
-    updates = rms_opt.get_updates(pmodel.trainable_weights, [], ploss)
-    optimizer = K.function([pmodel.input, action_pl, advantages_pl], [], updates=updates)
+    rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1)
 
-    closs = K.mean(K.square(discounted_r - vmodel.output))
-    updates2 = rms_opt.get_updates(vmodel.trainable_weights, [], closs)
-    optimizer2 = K.function([vmodel.input, discounted_r], [], updates=updates2)
+    model.compile(loss = {'out1': logloss, 'out2': sumofsquares}, loss_weights = {'out1': 1., 'out2' : 0.5}, optimizer = rms)
 
-    return (pmodel, vmodel, optimizer, optimizer2)
+    return model
 
 def _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate):
     with graph.as_default():
@@ -67,14 +61,14 @@ def _build_model_from_graph(graph, state_size, skip_frames, action_size, learnin
 def get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, threads):
     __keras_imports()
     with graph.as_default():
-        pmodel, vmodel, opt1, opt2 = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
-        pmodel._make_predict_function()
-        vmodel._make_predict_function()
+        model = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+        model._make_predict_function()
+        model._make_train_function()
         tmodels = []
         for _ in range(threads):
-            back_pmodel, back_vmodel, _, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
-            back_pmodel._make_predict_function()
-            back_vmodel._make_predict_function()
-            tmodels.append( (back_pmodel, back_vmodel) )
-        return (pmodel, vmodel, tmodels, opt1, opt2)
+            pvmodel = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+            pvmodel._make_predict_function()
+            pvmodel._make_train_function()
+            tmodels.append( pvmodel )
+        return (model, tmodels)
 

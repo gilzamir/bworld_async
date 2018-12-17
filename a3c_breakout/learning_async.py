@@ -16,15 +16,16 @@ def predict_back(bqin, bqout, graph, tmodels):
         with graph.as_default():
             while True:
                 state, ID, REQ, get_policy = bqin.get()
-                result = None
+                result = tmodels[ID].predict([state])
+                resp = None
                 if get_policy==1:
-                    result = tmodels[ID][0].predict([state])
+                    resp = result[0][0]
                 elif get_policy==2:
-                    result = tmodels[ID][1].predict([state])
+                    resp = result[1][0]
                 else:
-                    result = (tmodels[ID][0].predict([state]), tmodels[ID][1].predict([state]))
+                    resp = result
                 bqin.task_done()
-                bqout.put( (result, ID, REQ) )
+                bqout.put( (resp, ID, REQ) )
     except ValueError as ve:
         print("Erro nao esperado em predict_back")
         print(ve)
@@ -37,7 +38,7 @@ def predict_back(bqin, bqout, graph, tmodels):
         print("Erro nao esperado em predict_back: %s"%(sys.exc_info()[0]))
         raise
 
-def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
+def update_model(qin, graph, pmodel, tmodels, threads):
     import gc
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
@@ -48,42 +49,48 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
 
         for t in range(num_threads):
             memory[t] = []
-
+        loss = 0
+        count_loss = 0
         with graph.as_default():
             while True:
                 data, TID, sync_net = qin.get()
                 if sync_net:
-                    tmodels[TID][0].set_weights(pmodel.get_weights())
-                    tmodels[TID][1].set_weights(vmodel.get_weights())
-                    if T > 0 and T % 500000 == 0:
+                    tmodels[TID].set_weights(pmodel.get_weights())
+                    if T > 0 and T % 50 == 0 and count_loss > 0:
+                        print("AVG LOSS %f "%(loss/count_loss))
+                        count_loss = 0
+                        loss = 0.0
+                    if T > 0 and T % 100 == 0:
                         print("SAVING MODELS ON STEP %d........................"%(T))
                         pmodel.save_weights("modelp.wght")
-                        vmodel.save_weights("modelv.wght")
                         T = 1
                         N += 1
                     T += 1
                 else:
                     n = 0
-                    for state, action, R, svalue in data:
+                    for state, action, R, svalue, pi in data:
                         n += 1
-                        memory[TID].append( (state[0], to_categorical(action, agent.ACTION_SIZE), R-svalue, R) )
+                        caction = to_categorical(action, agent.ACTION_SIZE)
+                        caction[action] = pi[action]
+                        adv = R - svalue
+                        memory[TID].append( (state, adv, caction, R) )
                     if n >= 0:
                         inputs_c = []
-                        pactions_c = []
                         advantages_c = []
                         discounts_r_c = []
+                        pactions_c = []
                         c = 0
                         while c < n:
-                            sstate, saction, sadv, sdisc = memory[TID][c]
-                            inputs_c.append(sstate)
-                            pactions_c.append(saction)
-                            advantages_c.append(sadv)
+                            sstate, adv, action_c, sdisc = memory[TID][c]
+                            inputs_c.append(sstate[0])
+                            advantages_c.append(adv)
+                            pactions_c.append(action_c)
                             discounts_r_c.append(sdisc)
                             c += 1
-
-                        opt1([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c)])
-                        opt2([np.array(inputs_c), np.array(discounts_r_c)])
-                        
+                        weights = {'out1':np.array(advantages_c), 'out2':np.ones(c)}
+                        history = pmodel.fit([np.array(inputs_c)], [np.array(pactions_c), np.array(discounts_r_c)], epochs = T + 1, batch_size = n, sample_weight = weights, initial_epoch = T, verbose=0)
+                        loss += history.history['loss'][0]
+                        count_loss += 1
                         memory[TID] = []
  
 
@@ -120,24 +127,20 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
         graph = tf.get_default_graph()
 
         with graph.as_default():
-            pmodel, vmodel, tmodels, opt1, opt2 = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, len(threads))
+            pmodel, tmodels = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, len(threads))
 
             if START_WITH_PWEIGHTS != None:
                 pmodel.load_weights(START_WITH_PWEIGHTS)
-            
-            if START_WITH_VWEIGHTS != None:
-                vmodel.load_weights(START_WITH_VWEIGHTS)
 
             predicts = []
 
             for i in threads:
-                tmodels[i][0].set_weights(pmodel.get_weights())
-                tmodels[i][1].set_weights(vmodel.get_weights())
+                tmodels[i].set_weights(pmodel.get_weights())
                 t = threading.Thread(target=predict_back, args=(com[i][0], com[i][1], graph, tmodels))
                 predicts.append(t)
                 t.start()
 
-            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, vmodel, tmodels, opt1, opt2, threads))
+            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, tmodels, threads))
             update_model_work.start()
 
             for i in threads:
