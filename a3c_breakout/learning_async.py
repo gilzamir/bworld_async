@@ -10,6 +10,11 @@ from keras.models import clone_model
 import sys
 from keras.utils import to_categorical
 
+def step_decay(epoch):
+	decay = 3.2e-8
+	lrate = agent.LEARNING_RATE - epoch*decay
+	lrate = max(lrate, 0)
+	return lrate
 
 def predict_back(bqin, bqout, graph, tmodels):
     try:
@@ -39,7 +44,9 @@ def predict_back(bqin, bqout, graph, tmodels):
         raise
 
 def update_model(qin, graph, pmodel, tmodels, threads):
-    import gc
+    from keras.callbacks import LearningRateScheduler
+    lrate = LearningRateScheduler(step_decay)
+    callbacks_list = [lrate]
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
@@ -88,7 +95,7 @@ def update_model(qin, graph, pmodel, tmodels, threads):
                             discounts_r_c.append(sdisc)
                             c += 1
                         weights = {'out1':np.array(advantages_c), 'out2':np.ones(c)}
-                        history = pmodel.fit([np.array(inputs_c)], [np.array(pactions_c), np.array(discounts_r_c)], epochs = T + 1, batch_size = n, sample_weight = weights, initial_epoch = T, verbose=0)
+                        history = pmodel.fit([np.array(inputs_c)], [np.array(pactions_c), np.array(discounts_r_c)], epochs = T + 1, batch_size = n, callbacks = callbacks_list, sample_weight = weights, initial_epoch = T, verbose=0)
                         loss += history.history['loss'][0]
                         count_loss += 1
                         memory[TID] = []

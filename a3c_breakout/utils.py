@@ -13,7 +13,8 @@ def __keras_imports():
 
 def logloss(y_true, y_pred):     #policy loss
     __keras_imports()
-    return -K.sum( K.log(y_true*y_pred + (1-y_true)*(1-y_pred) + 1e-5), axis=-1)
+    #return -K.sum( K.log(y_true*y_pred + (1-y_true)*(1-y_pred) + 1e-5), axis=-1)
+    return 0.01 * K.sum(y_pred * K.log(y_pred + 1e-5) + (1-y_pred) * K.log(1-y_pred + 1e-5))
 
 #loss function for critic output
 def sumofsquares(y_true, y_pred):        #critic loss
