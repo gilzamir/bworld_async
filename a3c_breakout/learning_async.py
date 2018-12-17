@@ -13,12 +13,12 @@ from keras.utils import to_categorical
 
 def predict_back(bqin, bqout, graph, tmodels):
     try:
-        while True:
-            state, ID, REQ, get_policy = bqin.get()
-            with graph.as_default():
+        with graph.as_default():
+            while True:
+                state, ID, REQ, get_policy = bqin.get()
                 result = None
                 if get_policy==1:
-                   result = tmodels[ID][0].predict([state])
+                    result = tmodels[ID][0].predict([state])
                 elif get_policy==2:
                     result = tmodels[ID][1].predict([state])
                 else:
@@ -38,56 +38,44 @@ def predict_back(bqin, bqout, graph, tmodels):
         raise
 
 def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
+    import gc
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
         N = 0
-        inputs = {}
-        pactions = {}
-        advantages = {}
-        discounts_r = {}
-        for id in threads:
-            inputs[id] = deque(maxlen=50000)
-            pactions[id] = deque(maxlen=50000)
-            advantages[id] = deque(maxlen=50000)
-            discounts_r[id] = deque(maxlen=50000)
-        while True:
-            state, action, R, svalue, TID, apply_gradient = qin.get()
+        memory = []
+        num_threads = len(threads)
+        with graph.as_default():
+            while True:
+                data, TID = qin.get()
+                for state, action, R, svalue in data:
+                    memory.append( (state[0], to_categorical(action, agent.ACTION_SIZE), R-svalue, R) )
+                n = len(memory)
+                if n >= agent.BATCH_SIZE:
+                    inputs_c = []
+                    pactions_c = []
+                    advantages_c = []
+                    discounts_r_c = []
+                    for  sstate, saction, sadv, sdisc in memory:
+                        inputs_c.append(sstate)
+                        pactions_c.append(saction)
+                        advantages_c.append(sadv)
+                        discounts_r_c.append(sdisc)
+                    del memory
+                    memory = []
+                    opt1([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c)])
+                    opt2([np.array(inputs_c), np.array(discounts_r_c)])
 
-            with graph.as_default():
-                if not apply_gradient:
-                    inputs[TID].append(state[0])
-                    cat_action = to_categorical(action, agent.ACTION_SIZE)
-                    pactions[TID].append(cat_action)
-                    advantages[TID].append(R-svalue)
-                    discounts_r[TID].append(R)
-                else:
-                    inputs_c = inputs[TID]
-                    if len(inputs_c) > 0:
-                        pactions_c = pactions[TID]
-                        advantages_c = advantages[TID]
-                        discounts_r_c = discounts_r[TID]
+                    tmodels[TID][0].set_weights(pmodel.get_weights())
+                    tmodels[TID][1].set_weights(vmodel.get_weights())
 
-                        
-                        opt1([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c)])
-                        opt2([np.array(inputs_c), np.array(discounts_r_c)])
-                    
-                        tmodels[TID][0].set_weights(pmodel.get_weights())
-                        tmodels[TID][1].set_weights(vmodel.get_weights())
-
-                        inputs[TID].clear()
-                        pactions[TID].clear()
-                        advantages[TID].clear()
-                        discounts_r[TID].clear()
-
-                #if T > 0 and T % 500000 == 0:
-                    #print("SAVING MODELS ON STEP %d........................"%(T))
-                    #pmodel.save_weights("modelp.wght")
-                    #vmodel.save_weights("modelv.wght")
-                #    T = 1
-                #    N += 1
-            T += 1
-            time.sleep(0.0)
+                if T > 0 and T % 500000 == 0:
+                    print("SAVING MODELS ON STEP %d........................"%(T))
+                    pmodel.save_weights("modelp.wght")
+                    vmodel.save_weights("modelv.wght")
+                    T = 1
+                    N += 1
+                T += 1
 
     except ValueError as ve:
         print("Erro (ValueError) nao esperado em update model")
@@ -106,10 +94,11 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
     try:
         import tensorflow as tf
         import utils
-        #from keras.backend.tensorflow_backend import set_session
+        from keras.backend.tensorflow_backend import set_session
         #config = tf.ConfigProto()
         #config.gpu_options.per_process_gpu_memory_fraction = 0.3
         #config.gpu_options.gpu_options.allow_growth = True
+        #config.inter_op_parallelism_threads = 4
         #set_session(tf.Session(config=config))
         START_WITH_PWEIGHTS = None #nome do arquivo de pesos jah treinados. Se None, inicia do zero
         START_WITH_VWEIGHTS = None
@@ -159,17 +148,17 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
 
 def main():
     m = Manager()
-    MAX_THREADS = 8
+    MAX_THREADS = 4
     TIME_TO_CLIENTS = 0.5
     pool = Pool(MAX_THREADS+1)
     input_queue = m.JoinableQueue()
-    output_queue = m.Queue()
-    input_uqueue = m.Queue()
+    output_queue = m.Queue(maxsize=5000)
+    input_uqueue = m.Queue(maxsize=5000)
 
     com = []
     for _ in range(MAX_THREADS):
-        bqin = m.JoinableQueue()
-        bqout = m.Queue()
+        bqin = m.JoinableQueue(maxsize=5000)
+        bqout = m.Queue(maxsize=5000)
         com.append((bqin, bqout))
     
     threads = list(range(MAX_THREADS))

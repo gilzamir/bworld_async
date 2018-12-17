@@ -26,24 +26,18 @@ def pre_processing(observe):
         resize(rgb2gray(observe), (84, 84), mode='constant') * 255)
     return processed_observe
 
-LEARNING_RATE = 0.00001
+LEARNING_RATE = 0.00007
 ACTION_SIZE = 3
 SKIP_FRAMES = 4
 STATE_SIZE = (84, 84)
-
-def sample(buffer, size):
-    indices = random.sample(range(len(buffer)), size)
-    result = []
-    for i in indices:
-        result.append(buffer[i])
-    return result
+FORWARD_STEPS = 8
+BATCH_SIZE = 32
 
 class AsyncAgent:
     def __init__(self, ID, state_size, action_size):
         global SKIP_FRAMES
         self.skip_frames = SKIP_FRAMES
         self.ID = ID
-        self.samples = deque(maxlen=1000)
         if type(state_size) == tuple:
             self.state_size = state_size
         else:
@@ -53,7 +47,7 @@ class AsyncAgent:
         self.thread_id = ID
         self.thread_time = 0
         self.gamma = 0.99
-        self.ASYNC_UPDATE = 32
+        self.ASYNC_UPDATE = FORWARD_STEPS
         self.contextual_actions = [0, 1, 2]
         self.RENDER = False
         self.env = None
@@ -74,11 +68,8 @@ class AsyncAgent:
         # "ValueError: sum(pvals[:-1]) > 1.0" in numpy.multinomial
         probs = act_values[0]
         probs = probs - np.finfo(np.float32).epsneg
-
         histogram = np.random.multinomial(1, probs)
-
         action_index = int(np.nonzero(histogram)[0])
-
         return action_index
 
     def reset(self):
@@ -107,6 +98,8 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
     start_time = time.time()
 
     time.sleep(5 * (ID+1))
+
+    MAX_STEPS = 5000
     while True:
         try:
             if T >= MAX_T:
@@ -114,7 +107,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
             if agent.env == None:
                 agent.env =  gym.make('BreakoutDeterministic-v4')
-
+            agent.env.close()
             frame = agent.env.reset()
             if agent.RENDER:
                 agent.env.render()
@@ -123,8 +116,8 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
             # this is one of DeepMind's idea.
             # just do nothing at the start of episode to avoid sub-optimal
-            for _ in range(random.randint(1, agent.NO_OP_STEPS)):
-                frame, _, _, _ = agent.env.step(1)
+            #for _ in range(random.randint(1, agent.NO_OP_STEPS)):
+            #    frame, _, _, _ = agent.env.step(1)
 
             frame = pre_processing(frame)
             stack_frame = tuple([frame]*agent.skip_frames)
@@ -138,39 +131,43 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
             action = 0
             next_state = None
             step  = 0
+            dead = False
             avg_value = 0.0
             count_values = 0
-            while not is_done:
+            samples = []
+            while not is_done and step <  MAX_STEPS:
                 action = agent.act(bqin, bqout, initial_state)
                 
                 frame, reward, is_done, info = agent.env.step(action+1)
-                
+
                 next_frame = pre_processing(frame)
                 next_state = np.reshape([next_frame], (1, 84, 84, 1))
                 next_state = np.append(next_state, initial_state[:, :, :, :3], axis=3)
+  
+                score += reward
 
                 reward = np.clip(reward, -1.0, 1.0)
 
-                score += reward
-
+  
                 sample = (initial_state, action, reward, next_state)
-                agent.samples.append(sample)
-                
-                if len(agent.samples) >= agent.ASYNC_UPDATE or is_done: #ASYNC_UPDATE
+                samples.append(sample)
+
+                if len(samples) >= agent.ASYNC_UPDATE or is_done: #ASYNC_UPDATE
                     v = agent.predict(next_state, bqin, bqout, 2)[0]
                     avg_value += v[0]
                     count_values += 1
                     R = 0.0
                     if not is_done:
                         R = v[0]
-                    for i in reversed(range(0, len(agent.samples))):
-                        sstate, saction, sreward, _ = agent.samples[i]
+                    
+                    package = []
+                    for i in reversed(range(0, len(samples))):
+                        sstate, saction, sreward, _ = samples[i]
                         R = sreward + agent.gamma * R
-
-                        out_uqueue.put( (sstate, saction, R, v[0], agent.ID, False) )
-                    agent.samples.clear()
-
-                    out_uqueue.put( (_, _, _, _, agent.ID, True) )
+                        package.append( (sstate, saction, R, v[0]) )
+                    out_uqueue.put( (package, agent.ID) )
+                    del samples
+                    samples = []
 
                 if not is_done:
                     initial_state = next_state
@@ -181,8 +178,8 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                 agent.thread_time += 1
                 step += 1
             print("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d AVG_VALUE %f ELAPSED TIME %d segs"%(agent.ID, T, score, step, agent.thread_time, avg_value/count_values, time.time()-start_time))
-           # logger_debug.debug("THREAD_ID %d T %d SCORE %d STEPS %d TOTAL_STEPS %d  EPSILON %f"%(agent.ID, T, score, step, agent.thread_time, agent.epsilon))
             T += 1
+            time.sleep(0.0)
         except ValueError as ve:
             print("Erro nao esperado em agent.run")
             print(ve)
