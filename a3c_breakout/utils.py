@@ -29,12 +29,12 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     frames_input = layers.Input(ATARI_SHAPE, name='frames')
     #actions_input = layers.Input((ACTION_SIZE,), name='action_mask')
     # Assuming that the input frames are still encoded from 0 to 255. Transforming to [0, 1].
-    normalized = layers.Lambda(lambda x: x / 255.0, name='normalization')(frames_input)
+    #normalized = layers.Lambda(lambda x: x / 255.0, name='normalization')(frames_input)
 
     # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
     conv_1 = layers.convolutional.Conv2D(
         16, (8, 8), strides=(4, 4), activation='relu'
-    )(normalized)
+    )(frames_input)
     # "The second hidden layer convolves 32 4×4 filters with stride 2, again followed by a rectifier nonlinearity."
     conv_2 = layers.convolutional.Conv2D(
         32, (4, 4), strides=(2, 2), activation='relu'
@@ -42,11 +42,10 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     # Flattening the second convolutional layer.
     conv_flattened = layers.core.Flatten()(conv_2)
     # "The final hidden layer is fully-connected and consists of 256 rectifier units."
-    x1 = layers.Dense(256, activation='relu')(conv_flattened)
-    shared = layers.Dense(256, activation='relu')(x1)
+    shared = layers.Dense(256, activation='relu')(conv_flattened)
     # "The output layer is a fully-connected linear layer with a single output for each valid action."
     output_actions = layers.Dense(ACTION_SIZE, activation='softmax', name='out1')(shared)
-    output_value = layers.Dense(1, activation='linear', name='out2')(shared)
+    output_value = layers.Dense(1, name='out2')(shared)
     model = Model(inputs=[frames_input], outputs=[output_actions, output_value])
     
     rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1)
