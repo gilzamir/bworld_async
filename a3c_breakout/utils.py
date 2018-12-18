@@ -41,16 +41,16 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     advantages_pl = K.placeholder(shape=(None,))
     discounted_r = K.placeholder(shape=(None,))
 
-    weighted_actions = K.sum(action_pl * pmodel.output[0], axis=1)
+    weighted_actions = K.sum(action_pl * output_actions, axis=1)
     
     eligibility = K.log(weighted_actions + 1e-10) * K.stop_gradient(advantages_pl)
 
     entropy = K.sum(output_actions * K.log(output_actions + 1e-10), axis=1)
     ploss = 0.001 * entropy - K.sum(eligibility)
     
-    closs = K.square(discounted_r - output_value)
+    closs = K.mean(K.square(discounted_r - output_value))
         
-    total_loss = K.mean(ploss + 0.5 * closs)
+    total_loss = ploss + 0.5 * closs
 
     updates = rms.get_updates(pmodel.trainable_weights, [], total_loss)
     optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [], updates=updates)
