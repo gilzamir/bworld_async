@@ -139,6 +139,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
             
             while not is_done and step <  MAX_STEPS:
                 action, probs = agent.act(bqin, bqout, initial_state)
+                v = agent.predict(initial_state, bqin, bqout, 2)[0]
                 frame, reward, is_done, _ = agent.env.step(action+1)
                 
                 next_frame = pre_processing(frame)
@@ -150,12 +151,10 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                 reward = np.clip(reward, -1.0, 1.0)
 
   
-                sample = (initial_state, action, reward, next_state, probs)
+                sample = (initial_state, action, reward, next_state, probs, v[0])
                 samples.append(sample)
 
-                if len(samples) >= agent.ASYNC_UPDATE or is_done: #ASYNC_UPDATE
-                    v = agent.predict(next_state, bqin, bqout, 2)[0]
-                    
+                if len(samples) >= agent.ASYNC_UPDATE or is_done: #ASYNC_UPDATE                    
                     avg_value += v[0]
                     count_values += 1
                     R = 0.0
@@ -164,23 +163,21 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                     
                     package = []
 
-                    for i in reversed(range(0, len(samples))):
-                        sstate, saction, sreward, _, probs = samples[i]
+                    for i in reversed(range(0, len(samples)-1)):
+                        sstate, saction, sreward, _, probs, sv = samples[i]
                         R = sreward + agent.gamma * R
-                        package.append( (sstate, saction, R, v[0], probs) )
+                        package.append( (sstate, saction, R, sv, probs) )
                     
                     while out_uqueue.full():
                         #print('THREAD ID %d WAITING ----------' %(agent.ID))
                         time.sleep(0.01)
-                    out_uqueue.put( (package, agent.ID, False) )
-                    del samples
-
-                    samples = []
+                    if len(package) > 0:
+                        out_uqueue.put( (package, agent.ID, False) )
+                        del samples
+                        samples = []
 
                 if not is_done:
                     initial_state = next_state
-                else:
-                    out_uqueue.put( (None, agent.ID, True) )
                 
                 if agent.RENDER:
                     agent.env.render()

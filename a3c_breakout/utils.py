@@ -31,13 +31,11 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     shared = layers.Dense(256, activation='relu', kernel_initializer = 'random_uniform', bias_initializer = 'random_uniform')(conv_flattened)
     # "The output layer is a fully-connected linear layer with a single output for each valid action."
     output_actions = layers.Dense(ACTION_SIZE, activation='softmax', name='out1', kernel_initializer = 'random_uniform', bias_initializer = 'random_uniform')(shared)
-    output_value = layers.Dense(1, name='out_value', activation='linear', kernel_initializer = 'random_uniform', bias_initializer = 'random_uniform')(shared)
-    clipped_outvalue = layers.Lambda(lambda x: K.clip(x, 0.0001, 0.9999), name='out2')(output_value)
-    keras.initializers.RandomUniform(minval=-0.1, maxval=0.1, seed=None)
-    pmodel = Model(inputs=[frames_input], outputs=[output_actions])
-    vmodel = Model(inputs=[frames_input], outputs=[clipped_outvalue])
+    output_value = layers.Dense(1, name='out2', activation='linear', kernel_initializer = 'random_uniform', bias_initializer = 'random_uniform')(shared)
+    keras.initializers.RandomUniform(minval=-0.5, maxval=0.5, seed=None)
+    pmodel = Model(inputs=[frames_input], outputs=[output_actions, output_value])
 
-    rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1, clipnorm=1.0)
+    rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1, clipnorm=40.0)
 
 
     
@@ -45,18 +43,24 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     advantages_pl = K.placeholder(shape=(None,))
     discounted_r = K.placeholder(shape=(None,))
     
-    weighted_actions = K.sum(action_pl * pmodel.output, axis=1)
-    eligibility = K.log(weighted_actions + 1e-10) * K.stop_gradient(advantages_pl)
-    entropy = K.sum(pmodel.output * K.log(pmodel.output + 1e-10), axis=1)
+    
+    
+        
+    weighted_actions = K.sum(action_pl * pmodel.output[0], axis=1)
+    
+    eligibility = K.log(weighted_actions + 1e-10) * advantages_pl
+
+    entropy = K.sum(pmodel.output[0] * K.log(pmodel.output[0] + 1e-10), axis=1)
     ploss = 0.001 * entropy - K.sum(eligibility)
-    updates = rms.get_updates(pmodel.trainable_weights, [], ploss)
-    optimizer = K.function([pmodel.input, action_pl, advantages_pl], [], updates=updates)
+    
+    closs = K.square(discounted_r - pmodel.output[1])
+        
+    total_loss = K.mean(ploss + 0.5 * closs)
 
-    closs = K.mean(K.square(discounted_r - vmodel.output ))
-    updates2 = rms.get_updates(vmodel.trainable_weights, [], closs)
-    optimizer2 = K.function([vmodel.input, discounted_r], [], updates=updates2)
+    updates = rms.get_updates(pmodel.trainable_weights, [], total_loss)
+    optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [], updates=updates)
 
-    return (pmodel, vmodel, optimizer, optimizer2)
+    return (pmodel, optimizer)
 
 def _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate):
     with graph.as_default():
@@ -64,17 +68,14 @@ def _build_model_from_graph(graph, state_size, skip_frames, action_size, learnin
 
 def get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, threads):
     with graph.as_default():
-        pmodel, vmodel, opt1, opt2 = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
-        pmodel._make_predict_function()
-        vmodel._make_predict_function()
-        #model._make_train_function()
+        pmodel, opt = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
         
+        pmodel._make_predict_function()
+      
         tmodels = []
         for _ in range(threads):
-            pmodel, vmodel, _, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+            pmodel, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
             pmodel._make_predict_function()
-            vmodel._make_predict_function()
-            #pvmodel._make_train_function()
-            tmodels.append( (pmodel, vmodel) )
-        return (pmodel, vmodel, tmodels, opt1, opt2)
+            tmodels.append(pmodel)
+        return (pmodel, tmodels, opt)
 

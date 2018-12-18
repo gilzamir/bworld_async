@@ -18,11 +18,11 @@ def predict_back(bqin, bqout, graph, tmodels):
                 state, ID, REQ, get_policy = bqin.get()
                 result = None
                 if get_policy==1:
-                    result = tmodels[ID][0].predict([state])
+                    result = tmodels[ID].predict([state])[0]
                 elif get_policy==2:
-                    result = tmodels[ID][1].predict([state])
+                    result = tmodels[ID].predict([state])[1]
                 else:
-                    result = (tmodels[ID][0].predict([state]), tmodels[ID][1].predict([state]))
+                    result = tmodels[ID].predict([state])
                 bqin.task_done()
                 bqout.put( (result, ID, REQ) )
     except ValueError as ve:
@@ -37,7 +37,7 @@ def predict_back(bqin, bqout, graph, tmodels):
         print("Erro nao esperado em predict_back: %s"%(sys.exc_info()[0]))
         raise
 
-def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
+def update_model(qin, graph, pmodel, tmodels, opt, threads):
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
@@ -52,12 +52,10 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
             while True:
                 data, TID, sync_net = qin.get()
                 if sync_net:
-                    tmodels[TID][0].set_weights(pmodel.get_weights())
-                    tmodels[TID][1].set_weights(vmodel.get_weights())
+                    tmodels[TID].set_weights(pmodel.get_weights())
                     if T > 0 and T % 500 == 0:
                         print("SAVING MODELS ON STEP %d........................"%(T))
                         pmodel.save_weights("modelp.wght")
-                        vmodel.save_weights("modelv.wght")
                         N += 1
                     T += 1
                 else:
@@ -68,6 +66,7 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
                         caction[action] = 1.0
                         adv = R - svalue
                         memory[TID].append( (state, adv, caction, R) )
+                    
                     if n >= 0:
                         inputs_c = []
                         advantages_c = []
@@ -81,8 +80,7 @@ def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
                             pactions_c.append(action_c)
                             discounts_r_c.append(sdisc)
                             c += 1
-                        opt1([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c)])
-                        opt2([np.array(inputs_c), np.array(discounts_r_c)])
+                        opt([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c), np.array(discounts_r_c)])
                         memory[TID] = []
  
 
@@ -117,18 +115,17 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
         graph = tf.get_default_graph()
 
         with graph.as_default():
-            pmodel, vmodel, tmodels, opt1, opt2 = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, len(threads))
+            pmodel, tmodels, opt = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, len(threads))
 
             predicts = []
 
             for i in threads:
-                tmodels[i][0].set_weights(pmodel.get_weights())
-                tmodels[i][1].set_weights(vmodel.get_weights())
+                tmodels[i].set_weights(pmodel.get_weights())
                 t = threading.Thread(target=predict_back, args=(com[i][0], com[i][1], graph, tmodels))
                 predicts.append(t)
                 t.start()
 
-            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, vmodel, tmodels, opt1, opt2, threads))
+            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, tmodels, opt, threads))
             update_model_work.start()
 
             for i in threads:
