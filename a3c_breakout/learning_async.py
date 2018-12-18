@@ -10,27 +10,21 @@ from keras.models import clone_model
 import sys
 from keras.utils import to_categorical
 
-def step_decay(epoch):
-	decay = 3.2e-8
-	lrate = agent.LEARNING_RATE - epoch*decay
-	lrate = max(lrate, 0)
-	return lrate
 
 def predict_back(bqin, bqout, graph, tmodels):
     try:
         with graph.as_default():
             while True:
                 state, ID, REQ, get_policy = bqin.get()
-                result = tmodels[ID].predict([state])
-                resp = None
+                result = None
                 if get_policy==1:
-                    resp = result[0][0]
+                    result = tmodels[ID][0].predict([state])
                 elif get_policy==2:
-                    resp = result[1][0]
+                    result = tmodels[ID][1].predict([state])
                 else:
-                    resp = result
+                    result = (tmodels[ID][0].predict([state]), tmodels[ID][1].predict([state]))
                 bqin.task_done()
-                bqout.put( (resp, ID, REQ) )
+                bqout.put( (result, ID, REQ) )
     except ValueError as ve:
         print("Erro nao esperado em predict_back")
         print(ve)
@@ -43,10 +37,7 @@ def predict_back(bqin, bqout, graph, tmodels):
         print("Erro nao esperado em predict_back: %s"%(sys.exc_info()[0]))
         raise
 
-def update_model(qin, graph, pmodel, tmodels, threads):
-    from keras.callbacks import LearningRateScheduler
-    lrate = LearningRateScheduler(step_decay)
-    callbacks_list = [lrate]
+def update_model(qin, graph, pmodel, vmodel, tmodels, opt1, opt2, threads):
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
@@ -56,21 +47,17 @@ def update_model(qin, graph, pmodel, tmodels, threads):
 
         for t in range(num_threads):
             memory[t] = []
-        loss = 0
-        count_loss = 0
+
         with graph.as_default():
             while True:
                 data, TID, sync_net = qin.get()
                 if sync_net:
-                    tmodels[TID].set_weights(pmodel.get_weights())
-                    if T > 0 and T % 50 == 0 and count_loss > 0:
-                        print("AVG LOSS %f "%(loss/count_loss))
-                        count_loss = 0
-                        loss = 0.0
-                    if T > 0 and T % 100 == 0:
+                    tmodels[TID][0].set_weights(pmodel.get_weights())
+                    tmodels[TID][1].set_weights(vmodel.get_weights())
+                    if T > 0 and T % 500 == 0:
                         print("SAVING MODELS ON STEP %d........................"%(T))
                         pmodel.save_weights("modelp.wght")
-                        T = 1
+                        vmodel.save_weights("modelv.wght")
                         N += 1
                     T += 1
                 else:
@@ -94,10 +81,8 @@ def update_model(qin, graph, pmodel, tmodels, threads):
                             pactions_c.append(action_c)
                             discounts_r_c.append(sdisc)
                             c += 1
-                        weights = {'out1':np.array(advantages_c), 'out2':np.ones(c)}
-                        history = pmodel.fit([np.array(inputs_c)], [np.array(pactions_c), np.array(discounts_r_c)], epochs = T + 1, batch_size = n, callbacks = callbacks_list, sample_weight = weights, initial_epoch = T, verbose=0)
-                        loss += history.history['loss'][0]
-                        count_loss += 1
+                        opt1([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c)])
+                        opt2([np.array(inputs_c), np.array(discounts_r_c)])
                         memory[TID] = []
  
 
@@ -124,8 +109,6 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
         #config.gpu_options.gpu_options.allow_growth = True
         #config.inter_op_parallelism_threads = 4
         #set_session(tf.Session(config=config))
-        START_WITH_PWEIGHTS = None #nome do arquivo de pesos jah treinados. Se None, inicia do zero
-        START_WITH_VWEIGHTS = None
 
         state_size = agent.STATE_SIZE
         action_size = agent.ACTION_SIZE
@@ -134,20 +117,18 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
         graph = tf.get_default_graph()
 
         with graph.as_default():
-            pmodel, tmodels = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, len(threads))
-
-            if START_WITH_PWEIGHTS != None:
-                pmodel.load_weights(START_WITH_PWEIGHTS)
+            pmodel, vmodel, tmodels, opt1, opt2 = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, len(threads))
 
             predicts = []
 
             for i in threads:
-                tmodels[i].set_weights(pmodel.get_weights())
+                tmodels[i][0].set_weights(pmodel.get_weights())
+                tmodels[i][1].set_weights(vmodel.get_weights())
                 t = threading.Thread(target=predict_back, args=(com[i][0], com[i][1], graph, tmodels))
                 predicts.append(t)
                 t.start()
 
-            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, tmodels, threads))
+            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, vmodel, tmodels, opt1, opt2, threads))
             update_model_work.start()
 
             for i in threads:
