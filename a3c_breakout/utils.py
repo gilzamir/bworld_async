@@ -36,24 +36,19 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     pmodel = Model(inputs=[frames_input], outputs=[output_actions, output_value])
 
     rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1, clipnorm=40.0)
-
-
     
     action_pl = K.placeholder(shape=(None, action_size))
     advantages_pl = K.placeholder(shape=(None,))
     discounted_r = K.placeholder(shape=(None,))
-    
-    
-    
-        
+
     weighted_actions = K.sum(action_pl * pmodel.output[0], axis=1)
     
-    eligibility = K.log(weighted_actions + 1e-10) * advantages_pl
+    eligibility = K.log(weighted_actions + 1e-10) * K.stop_gradient(advantages_pl)
 
-    entropy = K.sum(pmodel.output[0] * K.log(pmodel.output[0] + 1e-10), axis=1)
+    entropy = K.sum(output_actions * K.log(output_actions + 1e-10), axis=1)
     ploss = 0.001 * entropy - K.sum(eligibility)
     
-    closs = K.square(discounted_r - pmodel.output[1])
+    closs = K.square(discounted_r - output_value)
         
     total_loss = K.mean(ploss + 0.5 * closs)
 
