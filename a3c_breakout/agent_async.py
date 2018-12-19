@@ -107,7 +107,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
             if agent.env == None:
                 agent.env =  gym.make('BreakoutDeterministic-v4')
-            agent.env.close()
+            #agent.env.close()
             frame = agent.env.reset()
             if agent.RENDER:
                 agent.env.render()
@@ -117,7 +117,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
             # this is one of DeepMind's idea.
             # just do nothing at the start of episode to avoid sub-optimal
             #for _ in range(random.randint(1, agent.NO_OP_STEPS)):
-            #    frame, _, _, _ = agent.env.step(1)
+            frame, _, _, _ = agent.env.step(1)
 
             frame = pre_processing(frame)
             stack_frame = tuple([frame]*agent.skip_frames)
@@ -126,7 +126,7 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
 
             agent.reset()
 
-            score = 0
+            score, start_life = 0, 5
 
             action = 0
             next_state = None
@@ -135,12 +135,13 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
             count_values = 0
             samples = []
 
-            out_uqueue.put( (None, agent.ID, True) )
+            #out_uqueue.put( (None, agent.ID, True) )
             
             while not is_done and step <  MAX_STEPS:
+                dead = False
                 action, probs = agent.act(bqin, bqout, initial_state)
                 v = agent.predict(initial_state, bqin, bqout, 2)[0]
-                frame, reward, is_done, _ = agent.env.step(action+1)
+                frame, reward, is_done, info = agent.env.step(action+1)
                 
                 next_frame = pre_processing(frame)
                 next_state = np.reshape([next_frame], (1, 84, 84, 1))
@@ -148,17 +149,23 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
   
                 score += reward
 
-                reward = np.clip(reward, -1.0, 1.0)
+                if start_life > info['ale.lives']:
+                    dead = True
+                    reward = -1
+                    start_life = info['ale.lives']
 
+                reward = np.clip(reward, -1.0, 1.0)
   
+                end_ep = dead or is_done
+
                 sample = (initial_state, action, reward, next_state, probs, v[0])
                 samples.append(sample)
 
-                if len(samples) >= agent.ASYNC_UPDATE or is_done: #ASYNC_UPDATE                    
+                if len(samples) >= agent.ASYNC_UPDATE or end_ep: #ASYNC_UPDATE                    
                     avg_value += v[0]
                     count_values += 1
                     R = 0.0
-                    if not is_done:
+                    if not end_ep:
                         R = v[0]
                     
                     package = []
@@ -175,6 +182,9 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                         out_uqueue.put( (package, agent.ID, False) )
                         del samples
                         samples = []
+
+                if dead and not is_done:
+                    agent.env.step(1)
 
                 if not is_done:
                     initial_state = next_state

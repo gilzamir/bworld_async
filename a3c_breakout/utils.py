@@ -15,12 +15,12 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     frames_input = layers.Input(ATARI_SHAPE, name='frames')
     #actions_input = layers.Input((ACTION_SIZE,), name='action_mask')
     # Assuming that the input frames are still encoded from 0 to 255. Transforming to [0, 1].
-    normalized = layers.Lambda(lambda x: x / 255.0, name='normalization')(frames_input)
+    #normalized = layers.Lambda(lambda x: x / 255.0, name='normalization')(frames_input)
 
     # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
     conv_1 = layers.convolutional.Conv2D(
         16, (8, 8), strides=(4, 4), activation='relu', kernel_initializer = 'random_uniform', bias_initializer = 'random_uniform'
-    )(normalized)
+    )(frames_input)
     # "The second hidden layer convolves 32 4×4 filters with stride 2, again followed by a rectifier nonlinearity."
     conv_2 = layers.convolutional.Conv2D(
         32, (4, 4), strides=(2, 2), activation='relu', kernel_initializer = 'random_uniform', bias_initializer = 'random_uniform'
@@ -35,8 +35,10 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     keras.initializers.RandomUniform(minval=-0.5, maxval=0.5, seed=None)
     pmodel = Model(inputs=[frames_input], outputs=[output_actions, output_value])
 
-    rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1, clipnorm=40.0)
+    rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1)
     
+    #pmodel.compile(rms, loss={'out1':'categorical_crossentropy', 'out2':'mse'})
+
     action_pl = K.placeholder(shape=(None, action_size))
     advantages_pl = K.placeholder(shape=(None,))
     discounted_r = K.placeholder(shape=(None,))
@@ -52,8 +54,8 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
         
     total_loss = ploss + 0.5 * closs
 
-    updates = rms.get_updates(pmodel.trainable_weights, [], total_loss)
-    optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [], updates=updates)
+    pupdates = rms.get_updates(pmodel.trainable_weights, [], total_loss)
+    optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [ploss, closs], updates=pupdates)
 
     return (pmodel, optimizer)
 
@@ -66,11 +68,12 @@ def get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, t
         pmodel, opt = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
         
         pmodel._make_predict_function()
+        #pmodel._make_train_function()
       
         tmodels = []
         for _ in range(threads):
-            pmodel, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
-            pmodel._make_predict_function()
+            tpmodel, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+            tpmodel._make_predict_function()
             tmodels.append(pmodel)
         return (pmodel, tmodels, opt)
 
