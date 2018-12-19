@@ -11,18 +11,20 @@ import sys
 from keras.utils import to_categorical
 
 
-def predict_back(bqin, bqout, graph, tmodels):
+def predict_back(bqin, bqout, graph, tmodels, locker):
     try:
         with graph.as_default():
             while True:
                 state, ID, REQ, get_policy = bqin.get()
                 result = None
+                locker.acquire()
                 if get_policy==1:
                     result = tmodels[ID].predict([state])[0]
                 elif get_policy==2:
                     result = tmodels[ID].predict([state])[1]
                 else:
                     result = tmodels[ID].predict([state])
+                locker.release()
                 bqin.task_done()
                 bqout.put( (result, ID, REQ) )
     except ValueError as ve:
@@ -37,7 +39,7 @@ def predict_back(bqin, bqout, graph, tmodels):
         print("Erro nao esperado em predict_back: %s"%(sys.exc_info()[0]))
         raise
 
-def update_model(qin, graph, pmodel, tmodels, opt, threads):
+def update_model(qin, graph, pmodel, tmodels, opt, threads, locker):
     try:
         print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
@@ -76,6 +78,9 @@ def update_model(qin, graph, pmodel, tmodels, opt, threads):
 
                     opt([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c), np.array(discounts_r_c)])
                     
+                    locker.acquire()
+                    tmodels[TID].set_weights(pmodel.get_weights())
+                    locker.release()
                     memory[TID] = []
                 if T > 0 and T % 1000 == 0:
                     print("Saving model in time %d"%(T))
@@ -111,7 +116,7 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
         learning_rate = agent.LEARNING_RATE
         skip_frames = agent.SKIP_FRAMES
         graph = tf.get_default_graph()
-
+        lock = Lock()
         with graph.as_default():
             pmodel, tmodels, opt = utils.get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, len(threads))
 
@@ -119,11 +124,11 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
 
             for i in threads:
                 tmodels[i].set_weights(pmodel.get_weights())
-                t = threading.Thread(target=predict_back, args=(com[i][0], com[i][1], graph, tmodels))
+                t = threading.Thread(target=predict_back, args=(com[i][0], com[i][1], graph, tmodels, lock))
                 predicts.append(t)
                 t.start()
 
-            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, tmodels, opt, threads))
+            update_model_work = threading.Thread(target=update_model, args=(qupdate, graph, pmodel, tmodels, opt, threads, lock))
             update_model_work.start()
 
             for i in threads:
