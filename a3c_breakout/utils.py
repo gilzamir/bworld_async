@@ -7,6 +7,7 @@ from keras import Model
 import tensorflow as tf
 from keras.optimizers import RMSprop
 
+
 def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     import keras
     ATARI_SHAPE = (state_size[0], state_size[1], skip_frames)  # input image size to model
@@ -15,12 +16,12 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     frames_input = layers.Input(ATARI_SHAPE, name='frames')
     #actions_input = layers.Input((ACTION_SIZE,), name='action_mask')
     # Assuming that the input frames are still encoded from 0 to 255. Transforming to [0, 1].
-    #normalized = layers.Lambda(lambda x: x / 255.0, name='normalization')(frames_input)
+    normalized = layers.Lambda(lambda x: x / 255.0, name='normalization')(frames_input)
 
     # "The first hidden layer convolves 16 8×8 filters with stride 4 with the input image and applies a rectifier nonlinearity."
     conv_1 = layers.convolutional.Conv2D(
         16, (8, 8), strides=(4, 4), activation='relu', kernel_initializer = 'random_uniform', bias_initializer = 'random_uniform'
-    )(frames_input)
+    )(normalized)
     # "The second hidden layer convolves 32 4×4 filters with stride 2, again followed by a rectifier nonlinearity."
     conv_2 = layers.convolutional.Conv2D(
         32, (4, 4), strides=(2, 2), activation='relu', kernel_initializer = 'random_uniform', bias_initializer = 'random_uniform'
@@ -35,27 +36,27 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     keras.initializers.RandomUniform(minval=-0.5, maxval=0.5, seed=None)
     pmodel = Model(inputs=[frames_input], outputs=[output_actions, output_value])
 
-    rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1, clipvalue=4.0)
+    rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1)
     
     #pmodel.compile(rms, loss={'out1':'categorical_crossentropy', 'out2':'mse'})
 
     action_pl = K.placeholder(shape=(None, action_size))
     advantages_pl = K.placeholder(shape=(None,))
     discounted_r = K.placeholder(shape=(None,))
-
-    weighted_actions = K.sum(action_pl * output_actions, axis=1)
+     
+    weighted_actions = K.max(action_pl * output_actions, axis=1, keepdims=True)
     
     eligibility = K.log(weighted_actions + 1e-10) * K.stop_gradient(advantages_pl)
 
-    entropy = -K.sum(output_actions * K.log(output_actions + 1e-10), axis=1)
-    ploss = 0.001 * entropy - K.sum(eligibility)
+    entropy = K.sum(output_actions * K.log(output_actions + 1e-10), axis=1, keepdims=True)
+    ploss = 0.001 * entropy - eligibility
     
-    closs = K.mean(K.square(discounted_r - output_value))
+    closs = K.square(discounted_r - output_value)
         
-    total_loss = ploss + 0.5 * closs
+    total_loss = K.mean(ploss + 0.5 * closs)
 
-    pupdates = rms.get_updates(pmodel.trainable_weights, [], total_loss)
-    optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [ploss, closs], updates=pupdates)
+    updates = rms.get_updates(pmodel.trainable_weights, [], total_loss)
+    optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [ploss, closs], updates=updates)
 
     return (pmodel, optimizer)
 
@@ -72,8 +73,8 @@ def get_model_pair(graph, state_size, skip_frames, action_size, learning_rate, t
       
         tmodels = []
         for _ in range(threads):
-            tpmodel, _ = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
+            tpmodel, topt = _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate)
             tpmodel._make_predict_function()
-            tmodels.append(pmodel)
+            tmodels.append( (pmodel, topt) )
         return (pmodel, tmodels, opt)
 

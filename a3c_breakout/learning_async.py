@@ -11,20 +11,25 @@ import sys
 from keras.utils import to_categorical
 
 
-def predict_back(bqin, bqout, graph, tmodels, locker):
+def predict_back(bqin, bqout, graph, tmodels, pmodel):
     try:
         with graph.as_default():
             while True:
-                state, ID, REQ, get_policy = bqin.get()
+                dt, ID, REQ, op = bqin.get()
                 result = None
-                locker.acquire()
-                if get_policy==1:
-                    result = tmodels[ID].predict([state])[0]
-                elif get_policy==2:
-                    result = tmodels[ID].predict([state])[1]
-                else:
-                    result = tmodels[ID].predict([state])
-                locker.release()
+                if op==agent.OP_GET_PI:
+                    result = tmodels[ID][0].predict([dt])[0]
+                elif op==agent.OP_GET_VALUE:
+                    result = tmodels[ID][0].predict([dt])[1]
+                elif op==agent.OP_GET_PI_AND_VALUE:
+                    result = tmodels[ID][0].predict([dt])
+                elif op == agent.OP_GET_GRADIENT:
+                    topt = tmodels[ID][1]
+                    result = topt(dt)
+                elif op == agent.OP_GET_SHARED_PARAMS:
+                    result = pmodel.get_weights()
+                elif op == agent.OP_SET_SHARED_PARAMS:
+                    pmodel.set_weights(dt)
                 bqin.task_done()
                 bqout.put( (result, ID, REQ) )
     except ValueError as ve:
@@ -41,51 +46,39 @@ def predict_back(bqin, bqout, graph, tmodels, locker):
 
 def update_model(qin, graph, pmodel, tmodels, opt, threads, locker):
     try:
-        print("UPDATING>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         T = 0
-        N = 0
-        memory = {}
-        num_threads = len(threads)
 
-        for t in range(num_threads):
-            memory[t] = []
+        num_threads = len(threads)
+        rho = 0.90
+        glr = 0.00007
+        eps = 1e-1
+        decay = 0.99
+        batch_size = 32
+
 
         with graph.as_default():
+            samples = []
             while True:
-                data, TID, sync_net = qin.get()
-                n = 0
-                for state, action, R, svalue, _ in data:
-                    n += 1
-                    caction = to_categorical(action, agent.ACTION_SIZE)
-                    caction[action] = 1.0
-                    adv = R - svalue
-                    memory[TID].append( (state, adv, caction, R) )
-                
-                if n >= 0:
-                    inputs_c = []
-                    advantages_c = []
-                    discounts_r_c = []
-                    pactions_c = []
-                    c = 0
-                    while c < n:
-                        sstate, adv, action_c, sdisc = memory[TID][c]
-                        inputs_c.append(sstate[0])
-                        advantages_c.append(adv)
-                        pactions_c.append(action_c)
-                        discounts_r_c.append(sdisc)
-                        c += 1
-
-
-                    opt([np.array(inputs_c), np.array(pactions_c), np.array(advantages_c), np.array(discounts_r_c)])
-                    
-                    locker.acquire()
-                    tmodels[TID].set_weights(pmodel.get_weights())
-                    locker.release()
-                    memory[TID] = []
-                if T > 0 and T % 1000 == 0:
-                    print("Saving model in time %d"%(T))
-                    pmodel.save_weights("modelp.wght")
-                T += 1
+                data, TID, operation = qin.get()
+                #-------------------------------------------------------------------
+                #BEGIN UPDATE THREAD NETWORK
+                if len(samples) >= batch_size:
+                    t = 0
+                    loss = 0
+                    for sample in samples:
+                        #print(grad)
+                        loss = opt(sample)[1]
+                        t += 1
+                        if random.random() < 0.001:
+                            print("CURRENT LOSS: %s"%(np.mean(loss)))
+                    samples = []
+                    tmodels[TID][0].set_weights(pmodel.get_weights())
+                    if T > 0 and T % 100000 == 0:
+                        print("Saving model in time %d"%(T))
+                        pmodel.save_weights("modelp.wght")
+                    T += 1
+                if operation==agent.OP_ACM_GRADS:
+                    samples.append(data)   
 
     except ValueError as ve:
         print("Erro (ValueError) nao esperado em update model")
@@ -100,7 +93,7 @@ def update_model(qin, graph, pmodel, tmodels, opt, threads, locker):
         raise
 
 
-def server_work(input_queue, output_queue, qupdate, com, threads):
+def server_work(qupdate, prediction_queue, threads):
     try:
         import tensorflow as tf
         import utils
@@ -123,8 +116,8 @@ def server_work(input_queue, output_queue, qupdate, com, threads):
             predicts = []
 
             for i in threads:
-                tmodels[i].set_weights(pmodel.get_weights())
-                t = threading.Thread(target=predict_back, args=(com[i][0], com[i][1], graph, tmodels, lock))
+                tmodels[i][0].set_weights(pmodel.get_weights())
+                t = threading.Thread(target=predict_back, args=(prediction_queue[i][0], prediction_queue[i][1], graph, tmodels, lock))
                 predicts.append(t)
                 t.start()
 
@@ -153,21 +146,19 @@ def main():
     MAX_THREADS = 4
     TIME_TO_CLIENTS = 0.5
     pool = Pool(MAX_THREADS+1)
-    input_queue = m.JoinableQueue(maxsize=QUEUE_BUFFER_SIZE)
-    output_queue = m.Queue(maxsize=QUEUE_BUFFER_SIZE)
     input_uqueue = m.Queue(maxsize=QUEUE_BUFFER_SIZE)
 
-    com = []
+    prediction_queue = []
     for _ in range(MAX_THREADS):
         bqin = m.JoinableQueue(maxsize=QUEUE_BUFFER_SIZE)
         bqout = m.Queue(maxsize=QUEUE_BUFFER_SIZE)
-        com.append((bqin, bqout))
+        prediction_queue.append((bqin, bqout))
     
     threads = list(range(MAX_THREADS))
-    pool.apply_async(server_work, (input_queue, output_queue, input_uqueue, com, threads))
+    pool.apply_async(server_work, (input_uqueue, prediction_queue, threads))
     time.sleep(TIME_TO_CLIENTS)
     for j in range(MAX_THREADS):
-        pool.apply_async(agent.run, (j, output_queue, input_queue, com[j][1], com[j][0], input_uqueue))
+        pool.apply_async(agent.run, (j, prediction_queue[j][1], prediction_queue[j][0], input_uqueue))
 
     pool.close()
     pool.join()

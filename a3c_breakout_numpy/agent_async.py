@@ -20,6 +20,7 @@ from skimage.transform import rotate
 from multiprocessing import Queue, Process, Pipe
 import numpy as np
 import time
+from keras.utils import to_categorical
 
 def pre_processing(observe):
     processed_observe = np.uint8(
@@ -31,6 +32,14 @@ ACTION_SIZE = 3
 SKIP_FRAMES = 4
 STATE_SIZE = (84, 84)
 FORWARD_STEPS = 5
+OP_GET_PI = 1
+OP_GET_VALUE = 2
+OP_GET_PI_AND_VALUE = 3
+OP_GET_GRADIENT = 4
+OP_GET_SHARED_PARAMS = 5
+OP_SET_SHARED_PARAMS = 6
+OP_SYNC_MODELS = 7
+OP_ACM_GRADS = 8
 #BATCH_SIZE = 32
 
 class AsyncAgent:
@@ -54,18 +63,7 @@ class AsyncAgent:
         self.NO_OP_STEPS = 10
 
     def act(self, qin, qout, state):
-        ID = None
-        TT = None
-        qout.put( (state, self.ID, self.thread_time, 1) )
-        qout.join()
-        act_values, ID, TT = qin.get()
-
-        if ID != self.ID or TT != self.thread_time:
-            print('INCONSISTENCE DETECTED ON agent.act: predict response returns inconsistent data!')
-
-        # Subtract a tiny value from probabilities in order to avoid
-
-        # "ValueError: sum(pvals[:-1]) > 1.0" in numpy.multinomial
+        act_values = self.predict_action(state, qin, qout)
         probs = act_values[0]
         probs = probs - np.finfo(np.float32).epsneg
         histogram = np.random.multinomial(1, probs)
@@ -75,21 +73,36 @@ class AsyncAgent:
     def reset(self):
         pass
 
-    '''
-        req_type pode ser 0 (pi e valor), 1 (pi) ou 2 (valor)
-    '''
-    def predict(self, nstate, qin, qout, req_type=0): 
+    def operation(self, nstate, qin, qout, op_type=3): 
         ID = None
         TT = None
         response = None
-        qout.put( (nstate, self.ID, self.thread_time, req_type) )
+        qout.put( (nstate, self.ID, self.thread_time, op_type) )
         qout.join()
         response, ID, TT = qin.get()
         if not self.thread_id == TT and not self.ID == ID:
                 print("ERRO : DADOS INCOERENTES EM Agent.predict_____________________________________________________________")
         return response
+    
+    def predict_value(self, nstate, qin, qout):
+        return self.operation(nstate, qin, qout, OP_GET_VALUE)
+    
+    def predict_action(self, nstate, qin, qout):
+        return self.operation(nstate, qin, qout, OP_GET_PI)
+    
+    def predict_action_and_value(self, nstate, qin, qout):
+        return self.operation(nstate, qin, qout, OP_GET_PI_AND_VALUE)
 
-def run(ID, qin, qout, bqin, bqout, out_uqueue):
+    def calculate_gradients(self, params, qin, qout):
+        return self.operation(params, qin, qout, OP_GET_GRADIENT)
+
+    def get_shared_params(self, qin, qout):
+        return self.operation(None, qin, qout, OP_GET_SHARED_PARAMS)
+
+    def set_shared_params(self, params, qin, qout):
+        return self.operation(params, qin, qout, OP_SET_SHARED_PARAMS)
+
+def run(ID, bqin, bqout, out_uqueue):
     agent = AsyncAgent(ID, (84, 84), 3)
 
     print(agent.ID)
@@ -135,12 +148,10 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
             count_values = 0
             samples = []
 
-            #out_uqueue.put( (None, agent.ID, True) )
-            
             while not is_done and step <  MAX_STEPS:
                 dead = False
                 action, probs = agent.act(bqin, bqout, initial_state)
-                v = agent.predict(initial_state, bqin, bqout, 2)[0]
+                v = agent.predict_value(initial_state, bqin, bqout)[0]
                 frame, reward, is_done, info = agent.env.step(action+1)
                 
                 next_frame = pre_processing(frame)
@@ -167,20 +178,27 @@ def run(ID, qin, qout, bqin, bqout, out_uqueue):
                     R = 0.0
                     if not end_ep:
                         R = v[0]
-                    
+                    inputs_c = []
+                    advantages_c = []
+                    discounts_r_c = []
+                    pactions_c = []
                     for i in reversed(range(0, len(samples))):
-                        sstate, saction, sreward, _, probs, sv = samples[i]
+                        sstate, _, sreward, _, probs, sv = samples[i]
                         R = sreward + agent.gamma * R
-                        while out_uqueue.full():
-                            #print('THREAD ID %d WAITING ----------' %(agent.ID))
-                            time.sleep(0.01)
-                        out_uqueue.put ( ([(sstate, saction, R, sv, probs)], agent.ID, False) )
+                        caction = to_categorical(action, ACTION_SIZE)
+                        advantage = R - sv
+                        inputs_c.append(sstate[0])
+                        advantages_c.append([advantage])
+                        pactions_c.append(caction)
+                        discounts_r_c.append([R])
+                    
+                    input_dt = [np.array(inputs_c), np.array(pactions_c), np.array(advantages_c), np.array(discounts_r_c)]
+                    grad = agent.calculate_gradients(input_dt, bqin, bqout)
                     
                     while out_uqueue.full():
-                        #print('THREAD ID %d WAITING ----------' %(agent.ID))
                         time.sleep(0.01)
-                    out_uqueue.put ( (None, agent.ID, True) )
-                    
+                    out_uqueue.put ( (grad, agent.ID, OP_ACM_GRADS) )
+
                     del samples
                     samples = []
 

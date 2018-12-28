@@ -37,32 +37,31 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     pmodel = Model(inputs=[frames_input], outputs=[output_actions, output_value])
 
     rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1)
-    
     #pmodel.compile(rms, loss={'out1':'categorical_crossentropy', 'out2':'mse'})
 
     action_pl = K.placeholder(shape=(None, action_size))
     advantages_pl = K.placeholder(shape=(None,))
     discounted_r = K.placeholder(shape=(None,))
-    
+     
     weighted_actions = K.max(action_pl * output_actions, axis=1, keepdims=True)
     
     eligibility = K.log(weighted_actions + 1e-10) * K.stop_gradient(advantages_pl)
 
     entropy = K.sum(output_actions * K.log(output_actions + 1e-10), axis=1, keepdims=True)
-    ploss = 0.001 * entropy + eligibility
+    ploss = 0.001 * entropy - eligibility
     
-    closs = K.square(discounted_r + output_value)
+    closs = K.square(discounted_r - output_value)
         
     total_loss = K.mean(ploss + 0.5 * closs)
 
     #pupdates = rms.get_updates(pmodel.trainable_weights, [], total_loss)
     #optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [ploss, closs], updates=pupdates)
-    
-    input_tensors = pmodel.inputs + [action_pl] + [advantages_pl] + [discounted_r] + [K.learning_phase()]
+
+    #input_tensors = pmodel.inputs + [action_pl] + [advantages_pl] + [discounted_r] + [K.learning_phase()]
     #input_loss = pmodel.inputs + [discounted_r]
     gradients = rms.get_gradients(total_loss, pmodel.trainable_weights)
     get_gradients = K.function(inputs=input_tensors, outputs=gradients)
-    get_loss = K.function(inputs=input_tensors, outputs=[total_loss])
+    get_loss = K.function(inputs=input_tensors, outputs=[closs, ploss])
     return (pmodel, get_gradients, get_loss)
 
 def _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate):
