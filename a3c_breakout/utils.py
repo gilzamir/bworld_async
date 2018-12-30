@@ -36,7 +36,7 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
     keras.initializers.RandomUniform(minval=-0.5, maxval=0.5, seed=None)
     pmodel = Model(inputs=[frames_input], outputs=[output_actions, output_value])
 
-    rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1)
+    rms = RMSprop(lr=learning_rate, rho=0.99, epsilon=0.1, clipvalue=40.0)
     
     #pmodel.compile(rms, loss={'out1':'categorical_crossentropy', 'out2':'mse'})
 

@@ -48,13 +48,7 @@ def update_model(qin, graph, pmodel, tmodels, opt, threads, locker):
     try:
         T = 0
 
-        num_threads = len(threads)
-        rho = 0.90
-        glr = 0.00007
-        eps = 1e-1
-        decay = 0.99
         batch_size = 32
-
 
         with graph.as_default():
             samples = []

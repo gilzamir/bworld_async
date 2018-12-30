@@ -54,14 +54,13 @@ def _build_model(graph, state_size, skip_frames, action_size, learning_rate):
         
     total_loss = K.mean(ploss + 0.5 * closs)
 
-    #pupdates = rms.get_updates(pmodel.trainable_weights, [], total_loss)
-    #optimizer = K.function([pmodel.input, action_pl, advantages_pl, discounted_r], [ploss, closs], updates=pupdates)
-
-    #input_tensors = pmodel.inputs + [action_pl] + [advantages_pl] + [discounted_r] + [K.learning_phase()]
-    #input_loss = pmodel.inputs + [discounted_r]
+    input_tensors = pmodel.inputs + [action_pl] + [advantages_pl] + [discounted_r] + [K.learning_phase()]
+    
     gradients = rms.get_gradients(total_loss, pmodel.trainable_weights)
     get_gradients = K.function(inputs=input_tensors, outputs=gradients)
+    
     get_loss = K.function(inputs=input_tensors, outputs=[closs, ploss])
+
     return (pmodel, get_gradients, get_loss)
 
 def _build_model_from_graph(graph, state_size, skip_frames, action_size, learning_rate):

@@ -48,8 +48,6 @@ def update_model(qin, graph, pmodel, tmodels, opt, get_loss, threads, locker):
     try:
         T = 0
 
-        memory = {}
-        num_threads = len(threads)
         rho = 0.90
         glr = 0.00007
         eps = 1e-1
@@ -68,18 +66,15 @@ def update_model(qin, graph, pmodel, tmodels, opt, get_loss, threads, locker):
                     t = 0
                     acm = [np.zeros(w.shape) for w in shared_params]
                     qtd = len(grad_acm)
-                    indices = list(range(0, qtd))
-                    indices = random.sample(indices, qtd)
-                    for i in indices:
-                        grads = grad_acm[i]
+                    while t < qtd:
+                        grads = grad_acm[t]
                         lr = glr
                         if decay > 0:
                             lr = lr * (1.0/(1.0 + decay * t))
-                        t += 1
                         for p, gr, i in zip(shared_params, grads, idx):
                             acm[i] = rho * acm[i] + (1-rho) * np.square(gr)
                             shared_params[i] = p - lr * gr/(np.sqrt(acm[i]+eps))
-                    
+                        t += 1
                     grad_acm = []
                     tmodels[TID][0].set_weights(shared_params)
                     if T > 0 and T % 100000 == 0:
